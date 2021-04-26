@@ -12,7 +12,7 @@ import sys
 import traceback
 import webbrowser
 
-__updated__ = "2021-04-26 16:06:59"
+__updated__ = "2021-04-26 17:18:41"
 
 BRIEF = """
 sed.py - python sed module and command line utility - sed.godrago.net\
@@ -280,9 +280,6 @@ class Script(object):
 
     def skip_space_within_continued_lines(self):
         return self.script_line.skip_space_within_continued_lines()
-
-    def is_cmd_end(self):
-        return self.script_line.is_end_of_cmd()
 
     def look_ahead(self):
         return self.script_line.look_ahead()
@@ -1690,7 +1687,7 @@ class Command(object):
 
     def parse_arguments(self, script):
         _ = script.get_char()
-        if not script.is_cmd_end():
+        if not script.script_line.is_end_of_cmd():
             raise SedException(self.position,
                                'Extra characters after command {cmd}',
                                cmd=self.function)
@@ -1746,7 +1743,7 @@ class _Command_with_label(Command):
         _, self.label = script.get_name('label',
                                         alpha_only=False,
                                         skip_space=True)
-        if not script.is_cmd_end():
+        if not script.script_line.is_end_of_cmd():
             raise SedException(
                 self.position,
                 'Command {cmd} can not have any arguments after label',
@@ -1904,7 +1901,7 @@ class Command_l(Command):
             _, self.line_length = script.get_number(char)
         else:
             self.line_length = None
-        if not script.is_cmd_end():
+        if not script.script_line.is_end_of_cmd():
             raise SedException(
                 script.position,
                 'Only an integer number can follow command l as parameter')
@@ -1971,7 +1968,7 @@ class Command_q(Command):
             _, self.exit_code = script.get_number(char)
         else:
             self.exit_code = None
-        if not script.is_cmd_end():
+        if not script.script_line.is_end_of_cmd():
             raise SedException(
                 script.position,
                 'Only an integer number can follow command {cmd} as parameter'
@@ -2040,7 +2037,7 @@ class Command_s(Command):
         self.filename = None
         self.delim = script.get_char()
         if self.delim == '\n':
-            script.continue_on_next_line()
+            script.script_line.continue_on_next_line()
         char, self.regexp = script.get_regexp(self.delim, address=False)
         if char != self.delim:
             raise SedException(
@@ -2048,7 +2045,7 @@ class Command_s(Command):
                 'Missing delimiter ({de}) after regexp parameter in command s',
                 de=self.delim)
         if self.delim == '\n':
-            script.continue_on_next_line()
+            script.script_line.continue_on_next_line()
         self.repl = script.get_replacement(self.delim)
         if self.repl is None:
             raise SedException(
@@ -2253,7 +2250,7 @@ class Command_y(Command):
     def parse_arguments(self, script):
         self.delim = script.get_char()
         if self.delim == '\n':
-            script.continue_on_next_line()
+            script.script_line.continue_on_next_line()
         char, _, _, self.left = script.get_char_list(self.delim)
         if char != self.delim:
             raise SedException(
@@ -2264,7 +2261,7 @@ class Command_y(Command):
             raise SedException(self.position,
                                'Missing left parameter to command y')
         if self.delim == '\n':
-            script.continue_on_next_line()
+            script.script_line.continue_on_next_line()
         char, _, _, self.right = script.get_char_list(self.delim)
         if char != self.delim:
             raise SedException(
@@ -2275,7 +2272,7 @@ class Command_y(Command):
             raise SedException(self.position,
                                'Missing right parameter to command y')
         char = script.get_char()
-        if not script.is_cmd_end():
+        if not script.script_line.is_end_of_cmd():
             raise SedException(script.position,
                                'Invalid extra characters after command y')
         try:
