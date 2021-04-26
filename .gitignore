@@ -15,3 +15,7 @@ tests/script.sed
 .project
 .pydevproject
 .settings/
+
+# Coverage
+.coverage
+htmlcov/
