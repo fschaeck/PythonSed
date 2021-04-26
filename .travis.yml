@@ -14,9 +14,11 @@ install:
   - pip install coveralls
 
 script:
-  - coverage run tests/test_script_io.py
-  - coverage run tests/test_script_inplace.py
-  - coverage run tests/test_suite.py @all-tests.suites -x test-python-sed.exclude
+  - coverage erase
+  - coverage run --timid tests/test_script_io.py
+  - coverage run -a --timid tests/test_script_inplace.py
+  - coverage run -a --timid tests/test_suite.py -d unittests
+  - coverage run -a --timid tests/test_suite.py -x test-python-sed.exclude @all-tests.suites
 
 after_success:
   - coveralls
