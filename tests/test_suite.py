@@ -1,5 +1,17 @@
 #!/usr/bin/env python
+
 from __future__ import print_function
+
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import time
+
+from PythonSed import Sed, SedException
+
 
 BRIEF = """\
 test-suite.py - unit testing utility for sed - sed.godrago.net\
@@ -38,19 +50,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import sys
-import os
-import re
-import argparse
-import subprocess
-import time
-from PythonSed import Sed, SedException
 
-if sys.version_info[0]==2:
+if sys.version_info[0] == 2:
     OPEN_ARGS = {}
 else:
     from io import open as open
-    OPEN_ARGS = { 'encoding': 'latin-1'}
+    OPEN_ARGS = {'encoding': 'latin-1'}
 
 # -- Base class for tests ----------------------------------------------------
 
@@ -69,7 +74,7 @@ class BaseTest:
         self.run_output = []
         self.no_autoprint = None
         self.regexp_extended = None
-        self.current_dir =  None
+        self.current_dir = None
         self.error_expected = False
 
     def run(self, binary=None, debug=False):
@@ -77,11 +82,11 @@ class BaseTest:
         if binary is None:
             self.run_output = run_python_sed(self.scriptname, self.inputname,
                                              self.no_autoprint,
-                                             self.regexp_extended,debug)
+                                             self.regexp_extended, debug)
         else:
             self.run_output = run_binary_sed(self.scriptname, self.inputname,
                                              self.no_autoprint,
-                                             self.regexp_extended,debug,
+                                             self.regexp_extended, debug,
                                              binary)
 
     def checktest(self, ntest, scriptname, wgood):
@@ -92,13 +97,11 @@ class BaseTest:
             ref_output = []
         else:
             try:
-                with open(self.goodname,'rt',**OPEN_ARGS) as f:
+                with open(self.goodname, 'rt', **OPEN_ARGS) as f:
                     ref_output = [line.strip('\n\r') for line in f.readlines()]
             except IOError:
                 print('error reading %s' % self.goodname)
                 sys.exit(1)
-            except:
-                raise
 
         if self.run_output is None:
             run_output = []
@@ -106,8 +109,6 @@ class BaseTest:
             run_output = []
             for line in self.run_output:
                 run_output.extend([x.strip('\r') for x in line.split('\n')])
-                ##run_output.extend(line.splitlines())
-                ##run_output.extend([x.strip('\r') for x in line.splitlines()])
 
         return checktest(ntest, scriptname, ref_output, run_output, wgood)
 
@@ -129,14 +130,14 @@ class SuiteTest(BaseTest):
 
         self.scriptname = 'test-tmp-script.sed'
         self.inputname = 'test-tmp-script.inp'
-        self.goodname  = 'test-tmp-script.good'
+        self.goodname = 'test-tmp-script.good'
         self.flagsname = None
 
         # script, input and result may be empty. In that case, the
         # previously defined entity is used.
-        self.title  = title[0]
+        self.title = title[0]
         self.script = '' if script == [] else script
-        self.input  = '' if inputlines == [] else inputlines
+        self.input = '' if inputlines == [] else inputlines
         self.result = '' if resultlines == [] else resultlines
         self.error_expected = self.result is None
 
@@ -168,12 +169,9 @@ class SuiteTest(BaseTest):
         self.regexp_extended = False
         line1 = self.script[0]
         if line1.startswith('#r') or line1.startswith('#nr'):
-            self.regexp_extended  = True
+            self.regexp_extended = True
 
         return True
-
-    #def run(self, binary=None):
-    #   inherited
 
     def check(self, ntest, scriptname):
 
@@ -191,7 +189,7 @@ class FolderTest(BaseTest):
 
         self.scriptname = scriptname
         self.inputname = scriptname.replace('.sed', '.inp')
-        self.goodname  = scriptname.replace('.sed', '.good')
+        self.goodname = scriptname.replace('.sed', '.good')
         self.flagsname = scriptname.replace('.sed', '.flags')
 
         self.folder = folder
@@ -215,7 +213,7 @@ class FolderTest(BaseTest):
         self.no_autoprint = False
         self.regexp_extended = False
         if os.path.isfile(self.flagsname):
-            with open(self.flagsname,'rt',**OPEN_ARGS) as f:
+            with open(self.flagsname, 'rt', **OPEN_ARGS) as f:
                 for line in f:
                     self.no_autoprint = self.no_autoprint or ('-n' in line)
                     self.regexp_extended = self.regexp_extended or ('-r' in line)
@@ -231,9 +229,6 @@ class FolderTest(BaseTest):
                 os.remove(wout)
 
         return True
-
-    #def run(self, binary=None):
-    #   inherited
 
     def check(self, ntest, scriptname):
 
@@ -254,19 +249,19 @@ def run_python_sed(scriptname, inputfile, no_autoprint, regexp_extended, debug):
     sed.encoding = 'latin-1'
     if debug:
         sed.debug = 2
-        
+
     try:
         # all loading methods must give the same result
-        mode = 1 # 1, 2, 3
+        mode = 1  # 1, 2, 3
 
         if mode == 1:
             sed.load_script(scriptname)
         elif mode == 2:
-            with open(scriptname,'rt',**OPEN_ARGS) as f:
+            with open(scriptname, 'rt', **OPEN_ARGS) as f:
                 string = ''.join(f.readlines())
             sed.load_string(string)
         elif mode == 3:
-            with open(scriptname,'rt',**OPEN_ARGS) as f:
+            with open(scriptname, 'rt', **OPEN_ARGS) as f:
                 string_list = f.readlines()
             sed.load_string_list(string_list)
         else:
@@ -274,10 +269,9 @@ def run_python_sed(scriptname, inputfile, no_autoprint, regexp_extended, debug):
 
         return ''.join(sed.apply(inputfile, None)).split('\n')
     except SedException as e:
-        print(e.message,file=sys.stderr)
+        print(e.message, file=sys.stderr)
         return None
-    except:
-        raise
+
 
 def run_binary_sed(scriptname, inputfile, no_autoprint, regexp_extended,
                    binary, debug):
@@ -292,20 +286,17 @@ def run_binary_sed(scriptname, inputfile, no_autoprint, regexp_extended,
         output = check_output(command_line, shell=True)
 
         # ascii utf-8 iso8859_15 latin_1
-        #output = output.decode('latin_1', errors='replace')
         if sys.version_info[0] == 2:
             pass
         else:
             output = output.decode('latin-1', errors='replace')
 
         output = output.split('\n')
-        #output = output.splitlines()
         return output
     except subprocess.CalledProcessError as e:
         print(e)
         return None
-    except:
-        raise
+
 
 def checktest(testnum, testname, ref_output, run_output, wgood):
     # compare expected and obtained results
@@ -336,14 +327,15 @@ def checktest(testnum, testname, ref_output, run_output, wgood):
 
     return result
 
+
 def list_compare(tag1, tag2, list1, list2):
 
     max_lst_len = max(len(list1), len(list2))
-    if max_lst_len==0:
-        return True,[]
-    
-    max_txt_len=max(list(len(txt) for txt in (list1+list2))+[len(tag1),len(tag2)])
-    
+    if max_lst_len == 0:
+        return True, []
+
+    max_txt_len = max(list(len(txt) for txt in (list1+list2))+[len(tag1), len(tag2)])
+
     # make sure both lists have same length
     list1.extend([''] * (max_lst_len - len(list1)))
     list2.extend([''] * (max_lst_len - len(list2)))
@@ -353,22 +345,25 @@ def list_compare(tag1, tag2, list1, list2):
     diff.append('| No | ? | {tag1:<{txtlen}.{txtlen}s} | {tag2:<{txtlen}.{txtlen}s} |'
                 .format(tag1=tag1, tag2=tag2, txtlen=max_txt_len))
     for i, (x, y) in enumerate(zip(list1, list2)):
-        
-        diff.append('| {idx:>2d} | {equal:1.1s} | {line1:<{txtlen}.{txtlen}s} | {line2:<{txtlen}.{txtlen}s} |'
-                     .format(idx=i+1,
-                             equal=(' ' if x==y else '*'),
-                             txtlen=max_txt_len,
-                             line1=x,
-                             line2=y))
-        res = res and x==y
+
+        diff.append('| {idx:>2d} | {equal:1.1s} | {line1:<{txtlen}.{txtlen}s} ' +
+                    '| {line2:<{txtlen}.{txtlen}s} |'
+                    .format(idx=i+1,
+                            equal=(' ' if x == y else '*'),
+                            txtlen=max_txt_len,
+                            line1=x,
+                            line2=y))
+        res = res and x == y
     return res, diff
 
+
 def file_compare(fn1, fn2):
-    with open(fn1,'rt',**OPEN_ARGS) as f:
+    with open(fn1, 'rt', **OPEN_ARGS) as f:
         lines1 = [line.strip('\n') for line in f.readlines()]
-    with open(fn2,'rt',**OPEN_ARGS) as f:
+    with open(fn2, 'rt', **OPEN_ARGS) as f:
         lines2 = [line.strip('\n') for line in f.readlines()]
     return list_compare(fn1, fn2, lines1, lines2)
+
 
 def check_output(*popenargs, **kwargs):
     # maintain compatibility with 2.6
@@ -408,6 +403,7 @@ def load_testsuite(testsuite):
 
     return all_tests
 
+
 def load_testsuite_file(testsuite):
     # testsuite is a suite file
 
@@ -424,7 +420,7 @@ def load_testsuite_file(testsuite):
 
     tests = list()
 
-    with open(testsuite,'rt',**OPEN_ARGS) as f:
+    with open(testsuite, 'rt', **OPEN_ARGS) as f:
         lines = [line.rstrip('\r\n') for line in f.readlines()]
 
     i = 0
@@ -436,10 +432,10 @@ def load_testsuite_file(testsuite):
             break
         delim = lines[i][0:3]
 
-        title,i = getsection(lines, i, delim)
-        script,i = getsection(lines, i, delim)
-        inputlines,i = getsection(lines, i, delim)
-        resultlines,i = getsection(lines, i, delim)
+        title, i = getsection(lines, i, delim)
+        script, i = getsection(lines, i, delim)
+        inputlines, i = getsection(lines, i, delim)
+        resultlines, i = getsection(lines, i, delim)
         if resultlines == ['???']:
             resultlines = None
 
@@ -472,6 +468,7 @@ def load_testsuite_file(testsuite):
 
     return tests
 
+
 def load_testsuite_folder(testsuite):
     # testsuite is a directory path
 
@@ -487,11 +484,12 @@ def load_testsuite_folder(testsuite):
 
     return tests
 
+
 def load_testsuite_batch(testsuite):
     # testsuite is a text file containing suite file names or folder names
 
     all_tests = list()
-    with open(testsuite,'rt',**OPEN_ARGS) as f:
+    with open(testsuite, 'rt', **OPEN_ARGS) as f:
         for suite in [line.strip() for line in f]:
             all_tests.extend(load_testsuite(suite))
     return all_tests
@@ -500,10 +498,10 @@ def load_testsuite_batch(testsuite):
 # -- Running tests suite -----------------------------------------------------
 
 
-def run_testsuite(tests, target, binary, exclude, elapsed_only):
+def run_testsuite(tests, target, binary, exclude, elapsed_only, debug):
     start = time.time()
     result = True
-    debug = target is not None;
+    debug = debug or target is not None
     n_succeeded = 0
     n_failed = 0
     n_ignored = 0
@@ -518,7 +516,7 @@ def run_testsuite(tests, target, binary, exclude, elapsed_only):
                 n_ignored += 1
             else:
                 if test.prepare():
-                    test.run(binary,debug=debug)
+                    test.run(binary, debug=debug)
                     if elapsed_only:
                         pass
                     else:
@@ -541,15 +539,18 @@ def run_testsuite(tests, target, binary, exclude, elapsed_only):
         print('Elapsed: %.3fs' % elapsed)
         sys.exit(0)
     else:
-        print('Test failure (succeeded: %d, ignored: %d, failed: %d)' % (n_succeeded, n_ignored, n_failed))
+        print('Test failure (succeeded: %d, ignored: %d, failed: %d)'
+              % (n_succeeded, n_ignored, n_failed))
         print('Elapsed: %.3fs' % elapsed)
         sys.exit(1)
+
 
 def test_requested(index, target):
     if target is None:
         return True
     else:
         return index == target
+
 
 def test_ignored(test, exclude):
     if test.title in exclude:
@@ -570,10 +571,12 @@ def parse_command_line():
                         dest="exclude", metavar='test')
     parser.add_argument("-e", help=argparse.SUPPRESS, action="store_true",
                         dest="elapsed_only")
+    parser.add_argument("-d", "--debug", help="enable debug output", action="store_true")
     parser.add_argument("file", help=argparse.SUPPRESS)
     parser.add_argument("target", nargs='?', help=argparse.SUPPRESS)
 
     return parser, parser.parse_args()
+
 
 def main():
     _, args = parse_command_line()
@@ -592,19 +595,20 @@ def main():
 
         if args.exclude:
             try:
-                with open(args.exclude,'rt',**OPEN_ARGS) as f:
+                with open(args.exclude, 'rt', **OPEN_ARGS) as f:
                     exclude = [line.strip() for line in f.readlines()]
-            except:
+            except IOError:
                 print('Error reading exclude file:', args.exclude)
                 sys.exit(1)
         else:
             exclude = list()
 
         all_tests = load_testsuite(testsuite)
-        run_testsuite(all_tests, target, args.binary, exclude, args.elapsed_only)
+        run_testsuite(all_tests, target, args.binary, exclude, args.elapsed_only, args.debug)
 
     finally:
         os.chdir(current_dir)
+
 
 if __name__ == "__main__":
     main()
