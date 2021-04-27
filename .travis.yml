@@ -15,10 +15,10 @@ install:
 
 script:
   - coverage erase
-  - coverage run --timid tests/test_script_io.py
-  - coverage run -a --timid tests/test_script_inplace.py
-  - coverage run -a --timid tests/test_suite.py -d unittests
-  - coverage run -a --timid tests/test_suite.py -x test-python-sed.exclude @all-tests.suites
+  - coverage run --timid tests/test_suite/test_script_io.py
+  - coverage run -a --timid tests/test_suite/test_script_inplace.py
+  - coverage run -a --timid tests/test_suite/test_suite.py -d unittests
+  - coverage run -a --timid tests/test_suite/test_suite.py -x test-python-sed.exclude @all-tests.suites
 
 after_success:
   - coveralls

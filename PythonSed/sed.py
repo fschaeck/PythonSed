@@ -12,7 +12,7 @@ import sys
 import traceback
 import webbrowser
 
-__updated__ = "2021-04-26 17:18:41"
+__updated__ = "2021-04-26 19:02:49"
 
 BRIEF = """
 sed.py - python sed module and command line utility - sed.godrago.net\
@@ -3071,10 +3071,10 @@ def main():
         if args.version:
             print(BRIEF)
             print(VERSION)
-            return
+            return 0
         elif args.do_helphtml:
             do_helphtml()
-            return
+            return 0
         sed = Sed()
         sed.no_autoprint = args.no_autoprint
         sed.regexp_extended = args.regexp_extended
@@ -3103,8 +3103,8 @@ def main():
     except:  # noqa: E722
         traceback.print_exception(*sys.exc_info(), file=sys.stderr)
         exit_code = 1
-    sys.exit(exit_code)
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
