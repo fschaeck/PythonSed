@@ -1,21 +1,24 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from __future__ import print_function
+from __future__ import print_function, unicode_literals
+from io import open, StringIO
 from tempfile import NamedTemporaryFile
+
 import argparse
-import ast
+import codecs
+import locale
 import os
 import re
-import string
 import sys
 import traceback
 import webbrowser
 
-__updated__ = "2021-04-26 19:02:49"
+
+__updated__ = '2021-05-11 18:10:04'
 
 BRIEF = """
-sed.py - python sed module and command line utility - sed.godrago.net\
+sed.py - python sed module and command line utility\
 """
 VERSION = '2.00'
 COPYRIGHT = """
@@ -65,24 +68,50 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-if sys.version_info[0] == 2:
-    PY2 = True
+DEFAULT_ENCODING = locale.getpreferredencoding()
+PY2 = sys.version_info[0] == 2
+if PY2:
+
+    def make_unicode(strg, encoding):
+        if type(strg) == str:
+            return unicode(strg, encoding)
+        else:
+            return strg
+
 else:
-    PY2 = False
-    from io import open as open
+    class unicode(object):  # pragma: no cover @ReservedAssignment
+        pass
+
+    def make_unicode(strg, encoding):  # @UnusedVariable
+        if type(strg) == bytes:
+            return strg.decode(encoding)
+        else:
+            return strg
+
+    def unichr(char):  # @ReservedAssignment
+        return chr(char)
+
+
+DEBUG_ENCODING = DEFAULT_ENCODING
+
+
+def DEBUG(text, **kwargs):
+    sys.stderr.write(text.format(**kwargs)+'\n')
 
 
 class ScriptLine (object):
     debug = 0
 
     def __init__(self,
-                 line=None,  # noqa: E127
+                 encoding=DEFAULT_ENCODING,
+                 line=None,
                  lineno=0,
                  scriptIdx=0,
                  sourceIdx=0,
                  source=None):
+        self.encoding = encoding
         if line is not None:
-            self.line = line
+            self.line = make_unicode(line, encoding)
             while self.line.endswith('\n'):
                 self.line = self.line[0:-1]
             if self.line.endswith('\\'):
@@ -104,12 +133,6 @@ class ScriptLine (object):
             self.last_char = ' '
             self.last_pos = -1
             self.last_source = self.source
-
-    def __str__(self):
-        return self.line
-
-    def __repr__(self):
-        return self.position + ': ' + self.line
 
     @property
     def position(self):
@@ -138,19 +161,29 @@ class ScriptLine (object):
         # we do not override last_char, last_pos nor last_source!
 
     def add_next(self, scriptLine):
-        if not self.is_continued and scriptLine.is_empty():
-            return self
-        else:
-            self.next = scriptLine
-            return scriptLine
+        self.next = scriptLine
+        return scriptLine
 
-    def is_empty(self):
-        chk = self.line.strip()
-        return len(chk) == 0 or chk.startswith('#')
+    def _printable(self, char_or_string_or_string_list):
+        if type(char_or_string_or_string_list) in [list, tuple]:
+            if len(char_or_string_or_string_list) == 0:
+                return '[]'
+            result = '['
+            for string in char_or_string_or_string_list:
+                result += self._printable(string)+', '
+            return result[:-2]+']'
+        elif len(char_or_string_or_string_list) > 1:
+            result = u"'"
+            for char in char_or_string_or_string_list:
+                result += self._printable(char)
+            return result+u"'"
+        else:
+            char_ord = ord(char_or_string_or_string_list)
+            if char_ord < 0x20 or 0x7f <= char_ord <= 0x9f:
+                return '\\x{ord:02x}'.format(ord=char_ord)
+            return char_or_string_or_string_list
 
     def get_char(self):
-        if self.debug >= 3:
-            print('get_char entering', file=sys.stderr)
         self.last_source = self.source
         self.last_pos = self.pos
         if self.pos < len(self.line):
@@ -160,41 +193,76 @@ class ScriptLine (object):
             if self.pos == len(self.line) and self.is_continued:
                 self.become(self.next)
             if self.debug >= 3:
-                print('get_char returning "{}"'.format(char), file=sys.stderr)
+                DEBUG('get_char returning "{chr}" from {pos}',
+                      chr=self._printable(char),
+                      pos=self.position)
             return char
         self.last_char = '\0'
         if self.debug >= 3:
-            print('get_char returning \\0', file=sys.stderr)
+            DEBUG('get_char returning \\x00 from {pos}', pos=self.position)
         return '\0'
 
     def continue_on_next_line(self):
         if self.pos == len(self.line) and self.next:
+            if self.debug >= 3:
+                DEBUG('continue_on_next_line: switching to next line')
             self.become(self.next)
+        elif self.debug >= 3:
+            DEBUG('continue_on_next_line: not switching to next line')
 
-    def look_ahead(self):
-        if self.pos < len(self.line):
-            return self.line[self.pos]
-        return '\0'
+    def look_ahead(self, *args):
+        for i in range(len(args)):
+            if self.pos+i >= len(self.line) or self.line[self.pos+i] not in args[i]:
+                if self.debug >= 3:
+                    DEBUG('look_ahead returning False for {args} at {pos}',
+                          args=self._printable(args),
+                          pos=self.position)
+                return False
+        if self.debug >= 3:
+            DEBUG('look_ahead returning True for {args} at {pos}',
+                  args=self._printable(args),
+                  pos=self.position)
+        return True
 
     def get_non_space_char_within_current_line(self):
+        if self.debug >= 3:
+            DEBUG('get_non_space_char_within_current_line entered')
         char = self.get_char()
         while char != '\n' and char.isspace():
             char = self.get_char()
+        if self.debug >= 3:
+            DEBUG('get_non_space_char_within_current_line returning {chr} from {pos}',
+                  chr=self._printable(char),
+                  pos=self.position)
         return char
 
     def get_non_space_char_within_continued_lines(self):
+        if self.debug >= 3:
+            DEBUG('get_non_space_char_within_continued_lines entered')
         char = self.get_char()
         while char.isspace():
             char = self.get_char()
+        if self.debug >= 3:
+            DEBUG('get_non_space_char_within_continued_lines returning {chr} from {pos}',
+                  chr=self._printable(char),
+                  pos=self.position)
         return char
 
     def skip_space_within_continued_lines(self):
+        if self.debug >= 3:
+            DEBUG('skip_space_within_continued_lines entered')
         char = self.last_char
         while char.isspace():
             char = self.get_char()
+        if self.debug >= 3:
+            DEBUG('skip_space_within_continued_lines returning {chr} from {pos}',
+                  chr=self._printable(char),
+                  pos=self.position)
         return char
 
     def skip_over_end_of_cmd(self):
+        if self.debug >= 3:
+            DEBUG('skip_over_end_of_cmd entered')
         char = self.last_char
         if char == '\0' or char.isspace():
             char = self.get_non_space_char_within_continued_lines()
@@ -205,16 +273,22 @@ class ScriptLine (object):
                 else:
                     return char
             elif char == '#':
-                while self.is_continued:
-                    self.become(self.next)
                 self.pos = len(self.line)  # skip to end of line
             char = self.get_non_space_char_within_continued_lines()
+        if self.debug >= 3:
+            DEBUG('skip_over_end_of_cmd returning {chr} from {pos}',
+                  chr=self._printable(char),
+                  pos=self.position)
         return char
 
     def is_end_of_cmd(self):
+        if self.debug >= 3:
+            DEBUG('is_end_of_cmd entered')
         char = self.last_char
         if char.isspace():
             char = self.get_non_space_char_within_continued_lines()
+        if self.debug >= 3:
+            DEBUG('is_end_of_cmd returning {bool}', bool=(char in ';#}\0'))
         return char in ';#}\0'  # block-end is implicit eoc
 
 
@@ -249,9 +323,10 @@ class Script(object):
         self.started_blocks = []
         self.first_command_entry = None
         self.sed_compatible = sed.sed_compatible
+        self.cmd_idx = 0
 
     def __str__(self):
-        if self.first_command_entry is None:
+        if self.first_command_entry is None:  # pragma: no cover  (only used within IDE)
             return '<nothing compiled yet>'
         result = ''
         command = self.first_command_entry
@@ -262,6 +337,10 @@ class Script(object):
             else:
                 command = command.next
         return result
+
+    def command_index(self):
+        self.cmd_idx += 1
+        return self.cmd_idx
 
     # convenience methods that are
     # all delegated to script_line
@@ -281,17 +360,19 @@ class Script(object):
     def skip_space_within_continued_lines(self):
         return self.script_line.skip_space_within_continued_lines()
 
-    def look_ahead(self):
-        return self.script_line.look_ahead()
+    def look_ahead(self, *args):
+        return self.script_line.look_ahead(*args)
 
     # methods to add script content
     def add_string(self, strg):
         self.script_idx += 1
         self.strg_idx += 1
         lineno = 0
-        for line in strg.split('\n'):
+        unicode_strg = make_unicode(strg, self.sed.encoding)
+        for line in unicode_strg.split('\n'):
             lineno += 1
             self._add(ScriptLine(
+                          self.sed.encoding,
                           line,
                           lineno,
                           self.script_idx,
@@ -305,25 +386,28 @@ class Script(object):
         self.script_idx += 1
         self.file_idx += 1
         lineno = 0
+        filename = make_unicode(filename, encoding)
+        if not os.path.exists(filename):
+            raise SedException('', 'Script file {file} does not exist.', file=filename)
         try:
-            args = {} if PY2 else {'encoding': encoding}
-            with open(filename, 'rt', **args) as f:
+            with open(filename, 'rt', encoding=encoding) as f:
                 for line in f.readlines():
                     lineno += 1
                     self._add(ScriptLine(
+                                    self.sed.encoding,
                                     line,
                                     lineno,
                                     self.script_idx,
                                     self.file_idx,
                                     filename))
-        except Exception as e:
+        except IOError as e:  # pragma: no cover
             raise SedException('', 'Error reading script file {file}: {err}',
                                file=filename, err=str(e))
         # if last line is continued, add another
         # empty line to resolve continuation
         if self.last_line.is_continued:
-            self._add(ScriptLine('\n', lineno + 1, self.script_idx,
-                                 self.obj_idx, None))
+            self._add(ScriptLine(self.sed.encoding, '\n', lineno + 1,
+                                 self.script_idx, self.file_idx, None))
 
     def add_object(self, script_stream):
         self.script_idx += 1
@@ -332,6 +416,7 @@ class Script(object):
         for line in script_stream.readlines():
             lineno += 1
             self._add(ScriptLine(
+                            self.sed.encoding,
                             line,
                             lineno,
                             self.script_idx,
@@ -340,8 +425,8 @@ class Script(object):
         # if last line is continued, add another
         # empty line to resolve continuation
         if self.last_line.is_continued:
-            self._add(ScriptLine('\n', lineno + 1, self.script_idx,
-                                 self.obj_idx, None))
+            self._add(ScriptLine(self.sed.encoding, '\n', lineno + 1,
+                                 self.script_idx, self.obj_idx, None))
 
     def _add(self, script_line):
         self.first_command_entry = None
@@ -376,6 +461,8 @@ class Script(object):
         self.script_line = self.first_line.copy()
         command = self.get_command()
         while command is not None:
+            if self.sed.debug >= 2:
+                DEBUG('{cmd}', cmd=command)
             if not last_command:
                 self.first_command_entry = command
             else:
@@ -391,14 +478,14 @@ class Script(object):
                                lbls='\n    '
                                .join('{} at {}'
                                      .format(ref.label, ref.position)
-                                     for ref_list in
-                                     self.referenced_labels.values()
+                                     for (_, ref_list) in
+                                     sorted(self.referenced_labels.items())
                                      for ref in ref_list))
 
     def parse_flags(self):
         # get flags from first line of script
         if self.first_line.line:
-            flags = (self.first_line.line.strip() + "   ")[0:3].strip()
+            flags = (self.first_line.line.strip() + '   ')[0:3].strip()
             if flags in ['#n', '#nr', '#rn']:
                 self.sed.no_autoprint = True
             if flags in ['#r', '#nr', '#rn']:
@@ -408,40 +495,31 @@ class Script(object):
         position, addr_range, function = self.get_address()
         # function is the first char after address range.
         # '' if not found and None at script end
-        while function == '':
-            if addr_range:
-                raise SedException(position, 'Address without a command')
-            position, addr_range = self.get_address()
+        if function == '' or function == '\n' or function == '\0':
+            raise SedException(position, 'Address without a command')
         if function is None:
             return None
         else:
             return Command.factory(self, addr_range, function)
 
     def get_char_list(self, delim):
-        """ this parses a list of characters for the y command """
+        u""" this parses a list of characters for the y command """
         strg = ''
-        pystrg = ''
         unescstrg = ''
         char = self.get_char()
-        pychr = ''
         while char != '\0' and char != delim:
             if char == '\\':
-                if self.look_ahead() == delim:
+                if self.look_ahead(delim):
                     char = self.get_char()
-                    pychr = char
                     unesc = char
                 else:
-                    char, pychr, unesc = self.get_escape(PLACE_TEXT)
-                    if unesc is None:
-                        unesc = pychr
+                    char, _, unesc = self.get_escape(PLACE_TEXT)
             else:
-                pychr = char
-                unesc = pychr
+                unesc = char
             strg += char
-            pystrg += pychr
             unescstrg += unesc
             char = self.get_char()
-        return char, strg, pystrg, unescstrg
+        return char, strg, unescstrg
 
     def get_name(self, kind, alpha_only=True, skip_space=False):
         nme = ''
@@ -452,19 +530,23 @@ class Script(object):
         while (char not in '\0;#}' and
                (char.isalpha() or not (char.isspace() or alpha_only))):
             if char == '\\':
-                SedException(self.position,
-                             'No backslash escapes allowed in {kind} name.',
-                             kind=kind)
+                raise SedException(self.position,
+                                   'No backslash escapes allowed in {kind} name.',
+                                   kind=kind)
             nme += char
             char = self.get_char()
         return char, nme
 
-    def unescape_char(self, strg):
-        """ is only called with strings that have
-            already been checked for invalid escapes
-            and only in textual context - no regexp
-        """
-        return ast.literal_eval(strg)
+    def get_unicode_name(self):
+        nme = ''
+        char = self.get_char()
+        while char not in '\n\0;#}':
+            if char == '\\':
+                raise SedException(self.position,
+                                   'No backslash escapes allowed in unicode character name.')
+            nme += char
+            char = self.get_char()
+        return char, nme
 
     def get_number(self, first_digit=None):
         if first_digit is None:
@@ -518,9 +600,11 @@ class Script(object):
                   - or None for functional escapes)
         """
         pos = self.position
-        if self.sed_compatible and place == PLACE_CHRSET:
-            if self.look_ahead() not in 'afnrtvsSwW' \
-               + ('cdox' if self.sed_compatible else '0123xdDuUN'):
+        if place == PLACE_CHRSET:
+            # if the backslash is not escaping something, it stands for itself
+            # (no need to double it in this case)
+            if not self.look_ahead('afnrtvsSwW0cdox' if self.sed_compatible else
+                                   'afnrtvsSwW0123xdDuUN'):
                 return '\\', '\\\\', '\\'
         char = self.get_char()
         # first the stuff that is the same for both
@@ -537,7 +621,7 @@ class Script(object):
         elif char == 'v':
             return '\\v', '\\v', '\v'
         elif char == '\\':
-                return '\\\\', '\\\\', '\\'
+            return '\\\\', '\\\\', '\\'
         elif (place & (PLACE_REGEXP + PLACE_CHRSET)
                 and char in 'sSwW'
               or place & PLACE_REGEXP and char in 'bB'):
@@ -549,19 +633,17 @@ class Script(object):
             # modifying case is more important
             return '\\' + char, '\\' + char, None
         if self.sed_compatible:
-            if char == '0':
-                return '\\0', '\\0', '\0'
             if place == PLACE_REGEXP:
-                if char == u"\u0060":
-                    return u'\\\u0060', r'\A', None
-                elif char == u"\u00B4":
-                    return u'\\\u00B4', r'\Z', None
+                if char == '\u0060':
+                    return '\\\u0060', '\\A', None
+                elif char == '\u00B4':
+                    return '\\\u00B4', '\\Z', None
                 elif char == '<':
-                    return r'\<', r'(?:\b(?=\w))', None
+                    return '\\<', '(?:\\b(?=\\w))', None
                 elif char == '>':
-                    return r'\>', r'(?:\b(?=\W))', None
+                    return '\\>', '(?:\\b(?=\\W))', None
             if place & (PLACE_REGEXP + PLACE_REPL):
-                if char.isdigit():
+                if char.isdigit() and char != '0':  # group backreference?
                     return '\\' + char, '(?:\\' + char + ')', None
             if char == 'c':
                 char = self.get_char()
@@ -573,87 +655,96 @@ class Script(object):
                     char_ord = ord(char.upper()) ^ 64
                 else:
                     char_ord = ord(char) ^ 64
-                char = r'\c' + char
+                char = '\\c' + char
                 return (char,
-                        self.hex_escape(char, pos, str(char_ord), 10),
-                        chr(char_ord))
-            elif char == 'd':
-                dec_num = (self.get_char()
-                           + self.get_char()
-                           + self.get_char())
-                char = r'\d' + dec_num
-                return (char,
-                        self.hex_escape(char, pos, dec_num, 10),
-                        chr(int(dec_num)))
-            elif char == 'o':
-                oct_num = (self.get_char()
-                           + self.get_char()
-                           + self.get_char())
-                char = r'\o' + oct_num
-                return (char,
-                        self.hex_escape(char, pos, oct_num, 8),
-                        chr(int(oct_num, 8)))
-            elif char == 'x':
-                hex_num = (self.get_char()
-                           + self.get_char())
-                char = r'\x' + hex_num
-                return (char,
-                        self.hex_escape(char, pos, hex_num, 16),
-                        chr(int(hex_num, 16)))
+                        '\\x'+format(char_ord, '02x'),
+                        unichr(char_ord))
+            # now we deal with byte escapes of which multiple in a row
+            # may actually form a multi-byte character in the chosen
+            # encoding and thus must all be processed together to be
+            # able to decode it into unicode.
+            # This is only done for sed compatible scripts. In Python
+            # syntax, the according unicode-escape sequences \\u, \\U
+            # or \\N must be used instead.
+            strg = ''
+            pystrg = ''
+            unesc = bytearray()
+            while char in 'dox0':
+                if char == 'd':
+                    num = self.get_char()+self.get_char()+self.get_char()
+                    base = 10
+                elif char == 'o':
+                    num = self.get_char()+self.get_char()+self.get_char()
+                    base = 8
+                elif char == 'x':
+                    num = self.get_char()+self.get_char()
+                    base = 16
+                else:
+                    num = '0'
+                    base = 10
+                try:
+                    int_num = int(num, base)
+                except ValueError:
+                    raise SedException(
+                        pos,
+                        'Invalid byte escape \\{chr}{num}. Number is not of base {base}.',
+                        chr=char, num=num, base=base)
+                strg += '\\'+char+num
+                pystrg += '\\x'+format(int_num, '02x')
+                unesc.append(int_num)
+                try:
+                    # let's try if we can decode this to unicode yet
+                    return strg, pystrg, unesc.decode(self.sed.encoding)
+                except UnicodeDecodeError:
+                    # we do not have enough bytes yet, let's check if there is more available
+                    if self.look_ahead('\\', 'dox0'):
+                        char = self.get_char()  # get \\
+                        char = self.get_char()  # get escaped character
+                    else:
+                        # no more byte escapes available... report error
+                        raise SedException(
+                            pos,
+                            'Incomplete byte escape data for a valid character in encoding {enc}',
+                            enc=self.sed.encoding)
         else:
             if (char in 'AZ' and place == PLACE_REGEXP  # noqa: E127
                   or char in 'dD' and place & (PLACE_REGEXP + PLACE_CHRSET)):
                 char = '\\' + char
                 return char, char, None
             if char.isdigit():
-                dig1 = int(char)
-                dig2 = self.look_ahead()
-                if dig2.isdigit():
-                    char += dig2
-                    dig2 = int(self.get_char())
-                    dig3 = self.look_ahead()
-                    if dig3.isdigit() and int(dig3) < 8:
-                        char += dig3
-                        dig3 = int(self.get_char())
-                        if dig1 > 3 or dig2 > 7:
-                            raise SedException(
-                                pos,
-                                '\\{esc} is not a valid octal escape.',
-                                esc=char)
-                        return '\\' + char, '\\' + char, chr(int(char, 8))
-                    elif dig1 == 0:
-                        if dig2 > 7:
-                            raise SedException(
-                                pos,
-                                '\\{esc} is not a valid octal escape.',
-                                esc=char)
-                        return '\\' + char, '\\' + char, chr(int(char, 8))
-                    else:
-                        # we got a two digit decimal escape - a back reference
-                        if place != PLACE_REGEXP and place != PLACE_REPL:
-                            raise SedException(pos, '\\{esc} is a group ' +
-                                               'backreference outside of' +
-                                               ' a regexp or replacement.',
-                                               esc=char)
-                        char = '\\' + char
-                        return char, char, None
-                elif dig1 == '0':
+                if char in '01234567' and self.look_ahead('01234567', '01234567'):
+                    # we have got a 3-digit octal escape
+                    char += self.get_char()+self.get_char()
+                    return '\\'+char, '\\'+char, unichr(int(char, 8))
+                elif char == '0' and self.look_ahead('1234567'):
+                    # we have got a 2-digit octal escape
+                    char += self.get_char()
+                    return '\\'+char, '\\'+char, unichr(int(char, 8))
+                elif char == '0':
+                    # we have got a zero-byte-escape
                     return '\\0', '\\0', '\0'
-                elif (place != PLACE_REGEXP
-                        and place != PLACE_REPL):
-                    raise SedException(pos, '\\{c} is a group backreference' +
-                                       ' outside of a regexp or replacement.',
-                                       c=char)
-                else:
-                    # we got a one digit back reference
-                    char = '\\' + char
-                    return char, char, None
+                else:  # char in '123456789'!
+                    # we have group backreference
+                    if self.look_ahead('0123456789'):
+                        char += self.get_char()
+                    if place != PLACE_REGEXP and place != PLACE_REPL:
+                        raise SedException(
+                            pos,
+                            '\\{esc} is a group backreference outside of a regexp or replacement.',
+                            esc=char)
+                    char = '\\'+char
+                    return char, '(?:'+char+')', None
             if char == 'x':
                 hex_num = (self.get_char() + self.get_char())
                 char = '\\x' + hex_num
-                return (char,
-                        self.hex_escape(char, pos, hex_num, 16),
-                        chr(int(hex_num, 16)))
+                try:
+                    num = int(hex_num, 16)
+                    return char, char, unichr(num)
+                except ValueError:
+                    raise SedException(
+                        pos,
+                        'Invalid hex code in byte escape {esc}',
+                        esc=char)
             elif char == 'u':
                 hex_num = (self.get_char()
                            + self.get_char()
@@ -661,8 +752,8 @@ class Script(object):
                            + self.get_char())
                 char = '\\u' + hex_num
                 try:
-                    _ = int(hex_num, 16)
-                    return char, char, self.unescape_char(char)
+                    num = int(hex_num, 16)
+                    return char, char, unichr(num)
                 except ValueError:
                     raise SedException(
                         pos,
@@ -679,8 +770,8 @@ class Script(object):
                            + self.get_char())
                 char = '\\U' + hex_num
                 try:
-                    _ = int(hex_num, 16)
-                    return char, char, self.unescape_char(char)
+                    num = int(hex_num, 16)
+                    return char, char, unichr(num)
                 except ValueError:
                     raise SedException(
                         pos,
@@ -694,15 +785,15 @@ class Script(object):
                         'Invalid unicode escape \\N{char}. ' +
                         'Expected { but found {char}',
                         char=char)
-                char, nme = self.get_name('unicode character')
+                char, nme = self.get_unicode_name()
                 if char != '}':
                     raise SedException(
                         pos,
                         'Invalid unicode escape \\N{{{esc}. ' +
                         'Missing } behind the character name.',
                         esc=nme)
-                nme += '\\N{' + nme + '}'
-                return nme, nme, self.unescape_char(nme)
+                nme = '\\N{' + nme + '}'
+                return nme, nme, codecs.getdecoder('unicode_escape')(nme)[0]
         if char.isalnum() and place != PLACE_TEXT:
             raise SedException(pos,
                                '\\{char} is not a valid escape in a {plce}.',
@@ -713,7 +804,7 @@ class Script(object):
 
     def get_regexp(self, delim, address=True):
         position = self.position
-        swap_escapes = not self.sed.regexp_extended
+        swap_escapes = not self.sed.regexp_extended and self.sed.sed_compatible
         char = self.get_char()
         if char == delim:
             regexp = SedRegexpEmpty(position, delim, address=address)
@@ -746,29 +837,52 @@ class Script(object):
             last_pychr = ''
             while char != '\0' and char != delim:
                 pychr = char
+                processed = False
                 if char == '\\':
-                    if swap_escapes and self.look_ahead() in '(){}|+?':
+                    processed = True
+                    if swap_escapes and self.look_ahead('(){}|+?'):
                         chr2 = self.get_char()
                         char += chr2
                         pychr = chr2
-                    elif self.look_ahead() == delim:
+                    elif self.look_ahead(delim):
                         char = self.get_char()
                         pychr = char
                     else:
-                        char, pychr, _ = self.get_escape(PLACE_REGEXP)
-                elif char in '(){}|+?':
-                    if swap_escapes:
-                        pychr = '\\' + pychr
-                elif char == '[':
-                    char, pychr = self.get_charset()
-                elif self.sed_compatible:
-                    # in sed a ^ not at the beginning of
-                    # a regexp must be taken literally
-                    if char == '^' and not (last_pychr in ['(', '|', '']):
-                        pychr = '\\^'
-                    elif char == '$':
-                        # remember this dollar sign's position in py_pattern
-                        dollars.append(len(py_pattern))
+                        char, pychr, unesc = self.get_escape(PLACE_REGEXP)
+                        # Module re only supports \\u, \\U from Python 3.3 and
+                        # \\N from 3.8. So we resolve these escape sequences here,
+                        # to allow using them even with earlier Python versions.
+                        # Furthermore byte-escape sequences under sed comaptibility
+                        # may specify multi-byte characters in the encoding. They
+                        # are resolved here as well. And the resolved characters
+                        # are processed as if they where specified in the script
+                        # themselves. Meaning, that special characters like ^ max
+                        # be specified through byte- or unicode-escapes. Just like
+                        # with GNU sed.
+                        if pychr[:2] in ['\\u', '\\U', '\\N', '\\x']:
+                            char = unesc
+                            processed = False
+
+                if not processed:
+                    # backslashes coming from byte-escapes will stand for themselves
+                    pychr = char
+                    if char == '\\':
+                        char = '\\\\'
+                        pychr = char
+                    elif char in '(){}|+?':
+                        if swap_escapes:
+                            pychr = '\\' + pychr
+                    elif char == '[':
+                        char, pychr = self.get_charset()
+                    elif self.sed_compatible:
+                        # in sed a ^ not at the beginning of
+                        # a regexp must be taken literally
+                        if char == '^' and not (last_pychr in ['(', '|', '']):
+                            pychr = '\\^'
+                        elif char == '$':
+                            # remember this dollar sign's position in py_pattern
+                            dollars.append(len(py_pattern))
+
                 if self.sed_compatible and pychr == '?' \
                    and last_pychr in ['(', '+', '*']:
                     raise SedException(
@@ -811,18 +925,6 @@ class Script(object):
                 char = self.get_non_space_char_within_continued_lines()
         return char, regexp
 
-    def hex_escape(self, esc, pos, val, base):
-        try:
-            i = int(val, base)
-            return (r'\x' + format(i, '02x'))
-        except ValueError:
-            raise SedException(
-                pos,
-                '{esc} is an invalid escape. Error when converting' +
-                ' digits of base {base}.',
-                esc=esc,
-                base=base)
-
     def get_charset(self):
         # handle []...] and [^]...]
         charset = '['
@@ -835,19 +937,19 @@ class Script(object):
             char = self.get_char()
         pyset = charset
         while char != ']' and char != '\0':
-            if char == '[' and self.look_ahead() in ':=.':
+            if char == '[' and self.look_ahead(':=.'):
                 position = self.position
                 class_char = self.get_char()
                 class_name = {':': 'character class',
                               '=': 'equivalence class',
                               '.': 'collating symbol'}[class_char]
                 char2, nme = self.get_name(class_name)
-                char = self.look_ahead()
-                if char2 != class_char or char != ']':
+                if char2 != class_char or not self.look_ahead(']'):
+                    char = self.get_char()
                     raise SedException(
                         position,
                         '[{clschr}{nme}{char2}{char} in charset' +
-                        ' is not a proper {cls} specification',
+                        ' is not a valid {cls} specification',
                         clschr=class_char,
                         nme=nme,
                         char2=char2,
@@ -881,7 +983,7 @@ class Script(object):
         char = self.get_char()
         while char != '\0' and char != delim:
             if char == '\\':
-                if self.look_ahead() == delim:
+                if self.look_ahead(delim):
                     char = self.get_char()
                     replacement.add_literal('\\' + char, char)
                 else:
@@ -988,8 +1090,8 @@ class Script(object):
                 char = self.get_char()
                 self.needs_last_line = True
             else:
-                SedException(self.position,
-                             'Invalid to-address in address range')
+                raise SedException(self.position,
+                                   'Invalid to-address in address range')
         else:  # only an address found - no range
             addr_range = AddressRangeFake(from_addr)
         char = self.script_line.skip_space_within_continued_lines()
@@ -1044,7 +1146,7 @@ class Script(object):
 
 
 class Sed(object):
-    """Usage:
+    u"""Usage:
     from PythonSed import Sed, SedException
     sed = Sed()
     sed.no_autoprint = True/False
@@ -1067,7 +1169,7 @@ class Sed(object):
     """
 
     def __init__(self,
-                 encoding='latin-1',
+                 encoding=DEFAULT_ENCODING,
                  line_length=70,
                  no_autoprint=False,
                  regexp_extended=False,
@@ -1092,23 +1194,35 @@ class Sed(object):
         self.script = Script(self)
         self.exit_code = 0
 
-    @staticmethod
-    def normalize_string(strng, line_length):
-        if strng is None:
+    def normalize_string(self, strng, line_length):
+        if strng is None:  # pragma: no cover (debug only)
             yield ''
             return
+        byteArray = bytearray(strng, self.encoding)
         x = ''
-        for c in strng:
-            if 32 <= ord(c) <= 127:
+        for c in byteArray:
+            if 32 <= c <= 127:
+                c = unichr(c)
                 if c == '\\':
                     x += c
                 x += c
-            elif c == '\n':
+            elif c == ord('\a'):
+                x += '\\a'
+            elif c == ord('\f'):
+                x += '\\f'
+            elif c == ord('\n'):
                 x += '\\n'
-            elif c == '\t':
+            elif c == ord('\r'):
+                x += '\\r'
+            elif c == ord('\t'):
                 x += '\\t'
+            elif c == ord('\v'):
+                x += '\\v'
             else:
-                x += '\\' + ('00' + oct(ord(c))[1:])[-3:]
+                o = oct(c)
+                if o.startswith('0o'):
+                    o = o[2:]
+                x += '\\' + ('000'+o)[-3:]
         width = line_length - 1
         while len(x) > width:
             yield (x[:width] + '\\')
@@ -1116,14 +1230,14 @@ class Sed(object):
         yield (x + '$')
 
     def write_state(self, title):
-        self.stateWriter.write(title)
+        self.stateWriter.writeState(title)
 
     def load_script(self,
                     filename,
                     encoding=None):
         if encoding is None:
             encoding = self.encoding
-        if type(filename) == str:
+        if type(filename) == str or PY2 and type(filename) == unicode:
             self.script.add_file(filename, encoding)
         else:
             self.script.add_object(filename)
@@ -1148,11 +1262,9 @@ class Sed(object):
     def printline(self, source, line):
         self.writer.printline(line)
         if self.debug > 0:
-            if not line.endswith('\n'):
-                line += '\n'
             prefix = 'printing (' + source + '): '
-            for lne in line.split('\n')[:-1]:
-                print(prefix + lne, file=sys.stderr)
+            for lne in line.split('\n'):
+                DEBUG('{prefix}{lne}', prefix=prefix, lne=lne.replace(' ', '\N{MIDDLE DOT}'))
 
     def flush_append_buffer(self):
         for line in self.append_buffer:
@@ -1160,97 +1272,105 @@ class Sed(object):
         self.append_buffer = []
 
     def getReader(self,
-                  source_files,
+                  inputs,
                   encoding,
                   writer,
                   separate,
                   needs_last_line):
         if needs_last_line:
             if writer.is_inplace():
-                return ReaderBufSepInplace(source_files, encoding, writer)
+                return ReaderBufferedSeparateInputsInplace(inputs, encoding, writer)
             elif separate:
-                return ReaderBufSep(source_files, encoding)
+                return ReaderBufferedSeparateInputs(inputs, encoding)
             else:
-                return ReaderBufOne(source_files, encoding)
+                return ReaderBufferedOneStream(inputs, encoding)
         elif writer.is_inplace():
-            return ReaderUnbufSepInplace(source_files, encoding, writer)
+            return ReaderUnbufferedSeparateInputsInplace(inputs, encoding, writer)
         elif separate:
-            return ReaderUnbufSep(source_files, encoding)
+            return ReaderUnbufferedSeparateInputs(inputs, encoding)
         else:
-            return ReaderUnbufOne(source_files, encoding)
+            return ReaderUnbufferedOneStream(inputs, encoding)
 
-    def apply(self, source_files, output=sys.stdout):
-        self.writer = Writer(output,
-                             self.encoding,
-                             self.in_place,
-                             self.debug)
-        first_cmd = self.script.get_first_command()
-        if first_cmd is None:
-            raise SedException('', 'Empty script specified.')
-        if self.debug > 0:
-            print(str(self.script), file=sys.stderr)
-            self.stateWriter = StateWriter(self)
-        self.reader = self.getReader(
-                        source_files,
-                        self.encoding,
-                        self.writer,
-                        self.separate,
-                        self.script.needs_last_line)
-        self.exit_code = 0
-        self.HS = ''
-        self.subst_successful = False
-        self.append_buffer = []
-        SedRegexp.last_regexp = None
+    def apply(self, inputs, output=sys.stdout):
         try:
+            DEBUG_ENCODING = self.encoding  # in case it was changed since object instantiation
+            self.writer = Writer(output,
+                                 self.encoding,
+                                 self.in_place,
+                                 self.debug)
+            first_cmd = self.script.get_first_command()
+            if first_cmd is None:
+                raise SedException('', 'Empty script specified.')
+            if self.debug > 0:
+                DEBUG('Configuration:')
+                DEBUG('  debug={dbg}', dbg=self.debug)
+                DEBUG('  encoding={enc}', enc=self.encoding)
+                DEBUG('  line_length={len}', len=self.line_length)
+                DEBUG('  no_autoprint={np}', np=self.no_autoprint)
+                DEBUG('  regexp_extended={ext}', ext=self.regexp_extended)
+                DEBUG('  sed_compatible={comp}', comp=self.sed_compatible)
+                DEBUG('  in_place={inp}', inp=('<off>' if self.in_place is None
+                                               else u"'"+self.in_place+u"'"))
+                DEBUG('  separate={sep}', sep=self.separate)
+                DEBUG('')
+                DEBUG('{scr}', scr=self.script)
+                self.stateWriter = StateWriter(self)
+            self.reader = self.getReader(
+                            inputs,
+                            self.encoding,
+                            self.writer,
+                            self.separate,
+                            self.script.needs_last_line)
+            self.exit_code = 0
+            self.HS = ''
+            self.subst_successful = False
+            self.append_buffer = []
+            SedRegexp.last_regexp = None
             self.PS = self.readline()
+
             while self.PS is not None:
                 matched, command = False, first_cmd
                 if self.debug > 0:
-                    print('############### new cycle'
-                          .ljust(self.line_length, '#'), file=sys.stderr)
-                    print('Auto Print: {}'
-                          .format('Off' if self.no_autoprint else 'On'),
-                          file=sys.stderr)
-                    print('Input File: {}[{}]'
-                          .format(self.reader.source_file_name,
-                                  self.reader.line_number),
-                          file=sys.stderr)
-                    print('Output To : {}'
-                          .format(self.writer.current_filename),
-                          file=sys.stderr)
+                    DEBUG('############### new cycle'.ljust(self.line_length, '#'))
+                    DEBUG('Auto Print: {ap}', ap='Off' if self.no_autoprint else 'On')
+                    DEBUG('Input File: {fle}[{idx}]',
+                          fle=self.reader.source_file_name,
+                          idx=self.reader.line_number)
+                    DEBUG('Output To : {fle}', fle=self.writer.current_filename)
                     self.write_state('current')
+                last_relevant_command = ' '
                 while command:
                     prev_command = command
                     matched, command = command.apply_func(self)
+                    if matched:
+                        last_relevant_command = prev_command.function
+
                 if self.debug > 0:
-                    print('############### cycle end '
-                          .ljust(self.line_length, '#'),
-                          file=sys.stderr)
-                    print('Auto Print: {}'
-                          .format('Off' if self.no_autoprint else 'On'),
-                          file=sys.stderr)
-                    print('Input File: {}[{}]'
-                          .format(self.reader.source_file_name,
-                                  self.reader.line_number),
-                          file=sys.stderr)
-                    print('Output To : {}'
-                          .format(self.writer.current_filename),
-                          file=sys.stderr)
+                    DEBUG('############### cycle end '.ljust(self.line_length, '#'))
+                    DEBUG('Auto Print: {ap}', ap='Off' if self.no_autoprint else 'On')
+                    DEBUG('Input File: {fle}[{idx}]',
+                          fle=self.reader.source_file_name,
+                          idx=self.reader.line_number)
+                    DEBUG('Output To : {fle}', fle=self.writer.current_filename)
                 if not (self.no_autoprint
-                        or prev_command.function in 'DQ'
+                        or last_relevant_command in 'DQ'
                         or self.PS is None):
                     self.printline('autop', self.PS)
                 self.flush_append_buffer()
-                if prev_command.function in 'qQ' and matched:
+                if last_relevant_command in 'qQ':
                     self.exit_code = prev_command.exit_code or 0
                     break
-                if prev_command.function != 'D':
+                if last_relevant_command != 'D':
                     self.PS = self.readline()
-        except:  # noqa: E722
+        except SedException as e:
+            sys.stderr.write(e.message+'\n')
+            self.exit_code = 1
+        except:  # noqa: E722  # pragma: no cover
             traceback.print_exception(*sys.exc_info(), file=sys.stderr)
             self.exit_code = 1
         finally:
-            self.reader.close()
+            if self.reader:
+                self.reader.close()
             return self.writer.finish()
 
 
@@ -1265,57 +1385,46 @@ class StateWriter(object):
 
     def _create_printable(self, lines_list, width):
         result = []
-        for lines in lines_list:
-            splitted = list(lne + '\n' for lne in lines.split('\n'))
-            if lines.endswith('\n'):
-                # remove trailing empty line from end of list
-                splitted = splitted[0:-1]
-            else:
+        for multi_lines in lines_list:
+            if multi_lines is not None:
+                splitted = list(lne + '\n' for lne in multi_lines.split('\n'))
                 # remove newline from last line
                 splitted[-1] = splitted[-1][:-1]
-            for line in splitted:
-                for normalized in self.sed.normalize_string(line, width):
-                    result.append('|{lne:<{width}s}|'.format(lne=normalized,
-                                                             width=width))
+                for line in splitted:
+                    for normalized in self.sed.normalize_string(line, width):
+                        result.append('|{lne:<{width}s}|'.format(
+                            lne=normalized.replace(' ', '\N{MIDDLE DOT}'),
+                            width=width))
         if len(result) == 0:
             result.append('|{lne:<{width}s}|'.format(lne='', width=width))
         return result
 
     def _write_list(self, title, last_list, new_list):
-        print(title + ':', file=sys.stderr)
+        DEBUG('{tit}:', tit=title)
         for i in range(len(new_list)):
             flag = '  '
             if i >= len(last_list) or last_list[i] != new_list[i]:
                 flag = '* '
-            print(flag + new_list[i], file=sys.stderr)
+            DEBUG('{flg}{lne}', flg=flag, lne=new_list[i])
 
-    def write(self, title):
+    def writeState(self, title):
         width = self.sed.line_length - 4
-        print(('--------------- ' + title + ' ')
-              .ljust(self.sed.line_length, '-'),
-              file=sys.stderr)
-        if self.sed.PS is not None:
-            new = list(lne + '\n' for lne in self.sed.PS.split('\n'))
-            # remove newline from last line since PS never ends with \n
-            new[-1] = new[-1][0:-1]
-        else:
-            new = []
-        new = self._create_printable(new, width)
+        DEBUG('{tit}', tit=('--------------- ' + title + ' ').ljust(self.sed.line_length, '-'))
+        new = self._create_printable([self.sed.PS], width)
         self._write_list('Pattern Space', self.last_PS, new)
         self.last_PS = new
-        new = list(lne + '\n' for lne in self.sed.HS.split('\n'))
-        # remove newline from last line since PS never ends with \n
-        new[-1] = new[-1][0:-1]
-        new = self._create_printable(new, width)
+
+        new = self._create_printable([self.sed.HS], width)
         self._write_list('Hold Space', self.last_HS, new)
         self.last_HS = new
+
         new = self._create_printable(self.sed.append_buffer, width)
         self._write_list('Append Buffer', self.last_append_buffer, new)
         self.last_append_buffer = new
+
         new = ('' if self.last_subst_successful == self.sed.subst_successful
                else '*')
-        print('{}Substitution successful: {}'
-              .format(new, self.sed.subst_successful), file=sys.stderr)
+        DEBUG('{flg}Substitution successful: {sub}', flg=new, sub=self.sed.subst_successful)
         self.last_subst_successful = self.sed.subst_successful
 
 
@@ -1323,7 +1432,7 @@ class Writer (object):
 
     def __init__(self, output, encoding, in_place, debug=0):
         self.encoding = encoding
-        self.in_place = in_place
+        self.in_place = make_unicode(in_place, encoding)
         self.debug = debug
         self.output_lines = []
         self.open_files = {}
@@ -1332,16 +1441,16 @@ class Writer (object):
         self.current_output_opened = False
         self.inplace_filenames = {}
         if in_place is None:
-            if type(output) == str:
-                self.current_filename = output
+            if type(output) == str or PY2 and type(output) == unicode:
+                self.current_filename = make_unicode(output, self.encoding)
                 try:
-                    args = {} if PY2 else {'encoding': self.encoding}
-                    self.current_output = open(output, 'wt', **args)
+                    self.current_output = open(self.current_filename, 'wt', encoding=self.encoding)
                     self.current_output_opened = True
                 except Exception as e:
                     raise SedException(
-                        '', "Can not open output file {file}: {err}",
-                        file=output, err=str(e))
+                        '', 'Can not open output file {file}: {err}',
+                        file=self.current_filename,
+                        err=make_unicode(str(e), encoding))
             elif output is not None:
                 self.current_output = output
 
@@ -1349,37 +1458,44 @@ class Writer (object):
         return self.in_place is not None
 
     def printline(self, line):
-        line += '\n'
         if self.current_output:
-            self.current_output.write(line)
-        self.output_lines.append(line)
+            # self.current_output if not None, will always point to a stream
+            # that expects unicode to be written to. That means, if a stream
+            # is passed in as output to sed.apply, THAT stream must accept
+            # unicode data as well.
+            self.current_output.write(line+'\n')
+        self.output_lines.extend(lne+'\n' for lne in line.split('\n'))
 
     def add_write_file(self, filename):
         if self.open_files.get(filename) is None:
-            args = {} if PY2 else {'encoding': self.encoding}
-            self.open_files[filename] = open(filename, 'wt', **args)
+            if filename in ['/dev/stdout', '-']:
+                writer = sys.stdout
+                self.open_files['/dev/stdout'] = writer
+                self.open_files['-'] = writer
+            elif filename == '/dev/stderr':
+                self.open_files['/dev/stderr'] = sys.stderr
+            else:
+                self.open_files[filename] = open(filename, 'wt', encoding=self.encoding)
 
     def write_to_file(self, filename, line):
         open_file = self.open_files.get(filename)
-        if open_file is None:
-            if filename == '/dev/stdout' or filename == '-':
-                open_file = sys.stdout
-            elif filename == '/dev/stderr':
-                open_file = sys.stderr
-            else:
-                raise SedException('', 'File {file} not opened for writing.',
-                                   file=filename)
+        if open_file is None:  # pragma: no cover (should never happen)
+            raise SedException('', 'File {file} not opened for writing.', file=filename)
         if not line.endswith('\n'):
             line += '\n'
-        if self.debug > 0:
-            print('writing to ' + filename + ': ' + line, end='',
-                  file=sys.stderr)
+        if self.debug > 0:  # pragma: no cover (debug only)
+            DEBUG('writing to {fle}: {txt}',
+                  fle=filename,
+                  txt=line.replace(' ', '\N{MIDDLE DOT}'))
         open_file.write(line)
 
-    def open_inplace(self, file_name):
-        self.current_filename = os.path.abspath(file_name)
+    def open_inplace(self, filename):
+        self.current_filename = os.path.abspath(filename)
         directory = os.path.dirname(self.current_filename)
-        self.current_output = NamedTemporaryFile(dir=directory, mode='wt',
+        prefix = os.path.basename(self.current_filename)+'.'
+        self.current_output = NamedTemporaryFile(dir=directory,
+                                                 prefix=prefix,
+                                                 mode='wt',
                                                  delete=False)
         self.current_output_opened = True
 
@@ -1404,74 +1520,127 @@ class Writer (object):
                 bkup = self.current_filename + self.in_place
             os.rename(self.current_filename, bkup)
             os.rename(self.current_output.name, self.current_filename)
-            if self.in_place == '':
+            if len(self.in_place) == 0:
                 os.remove(bkup)
 
     def finish(self):
         if self.current_output_opened:
             if self.in_place is not None:
-                try:
+                try:  # pragma: no cover (should never happen)
                     self.close_inplace()
                 except IOError:
                     pass
             else:
                 try:
                     self.current_output.close()
-                except IOError:
+                except IOError:  # pragma: no cover (happens only with real IO errors)
                     pass
-        for open_file in self.open_files.values():
+        for (filename, open_file) in self.open_files.items():
             try:
-                open_file.close()
-            except IOError:
+                if filename not in ['/dev/stdout', '/dev/stderr', '-']:
+                    open_file.close()
+            except IOError:  # pragma: no cover (happens only with real IO errors)
                 pass
+        self.open_files.clear()
         return self.output_lines
 
 
-class ReaderUnbufOne(object):
+# The following classes provide the stream input readers for the various combinations
+# of the ways the input must be processed. The Sed.getReader(...) method selects the
+# right class based on the options --separate and --inplace and if any regexp uses $
+# and needs to know if a certain line is the last line of an input stream.
+# Using different classes for these contstrains allows to read the input without
+# constantly having to re-check the options.
 
-    def __init__(self, source_files, encoding):
-        if type(source_files) == list:
-            if len(source_files) == 0 or \
-               len(source_files) == 1 \
-               and source_files[0] is None:
-                self.source_files = [sys.stdin]
-            else:
-                self.source_files = source_files
-        elif source_files is None:
-            self.source_files = [sys.stdin]
+class ReaderUnbufferedOneStream(object):
+    """ This reader class is used to process all input files/streams as one big
+        stream of input lines. There is also no need - or indication for - knowing
+        when the last line of input is processed.
+    """
+
+    def __init__(self, inputs, encoding):
+        if inputs is None:
+            self.inputs = [sys.stdin]
         else:
-            self.source_files = [source_files]
+            if type(inputs) != list:
+                self.inputs = [inputs]
+            else:
+                self.inputs = inputs
+            if len(self.inputs) == 0 or \
+               len(self.inputs) == 1 \
+               and not self.inputs[0]:  # empty or None
+                self.inputs = [sys.stdin]
+
         self.encoding = encoding
         self.line = ''
         self.line_number = 0
         self.source_file_name = None
+        self.open_index = 0
         self.open_next()
         self.open_files = {}
 
+    def check_inplace_inputs(self, inputs):
+        files = inputs
+        if type(inputs) != list:
+            files = [inputs]
+        if len(files) == 0:
+            raise SedException(
+                '', 'Can not use stdin as input for inplace-editing.')
+        for open_file in files:
+            if open_file is None:
+                raise SedException(
+                    '', 'Can not use stdin as input for inplace-editing.')
+            elif not (type(open_file) == str or PY2 and type(open_file) == unicode):
+                raise SedException(
+                    '',
+                    'Can not use streams, files or literals as input for inplace-editing.')
+            elif open_file in ['-', '/dev/stdin', '-', '/dev/stdin']:
+                raise SedException(
+                    '', 'Can not use stdin as input for inplace-editing.')
+
     def open_next(self):
-        if len(self.source_files) == 0:
+        if len(self.inputs) == 0:
             self.input_stream = None
             self.input_stream_opened = False
             return
-        source_file = self.source_files.pop(0)
-        if type(source_file) != str:
-            self.input_stream = source_file
-            self.source_file_name = '<stream>'
-            self.input_stream_opened = False
-        elif source_file == '-':
-            self.input_stream = sys.stdin
-            self.source_file_name = '<stdin>'
-            self.input_stream_opened = False
-        else:
+        self.open_index += 1
+        next_input = self.inputs.pop(0)
+        if type(next_input) == list:
+            result = ''
+            for lne in next_input:
+                lne = make_unicode(lne, self.encoding)
+                result += lne
+                if not lne.endswith('\n'):
+                    result += '\n'
+            self.input_stream = StringIO(result)
+            self.source_file_name = '<literal[{}]>'.format(self.open_index)
+            self.input_stream_opened = True
+        elif type(next_input) == str or PY2 and type(next_input) == unicode:
             try:
-                args = {} if PY2 else {'encoding': self.encoding}
-                self.input_stream = open(source_file, mode='rt', **args)
-                self.source_file_name = source_file
-                self.input_stream_opened = True
-            except IOError as e:
+                self.source_file_name = make_unicode(next_input, self.encoding)
+            except UnicodeDecodeError as e:
                 raise SedException(
-                    '', 'Unable to open input file {file}: {err}',
-                    file=source_file, err=str(e))
+                    '', 'Unable to convert file name {fle} to unicode using encoding {enc}',
+                    fle=codecs.getdecoder('latin1', 'replace')(next_input)[0],
+                    enc=self.encoding)
+
+            if self.source_file_name in ['-', '/dev/stdin']:
+                self.input_stream = sys.stdin
+                self.source_file_name = '<stdin[{}]>'.format(self.open_index)
+                self.input_stream_opened = False
+            else:
+                self.input_stream_opened = True
+                try:
+                    self.input_stream = open(self.source_file_name, 'rt', encoding=self.encoding)
+                except IOError as e:
+                    raise SedException(
+                        '', 'Unable to open input file {file}: {err}',
+                        file=self.source_file_name,
+                        err=make_unicode(str(e), self.encoding))
+        else:
+            self.input_stream = next_input
+            self.source_file_name = '<stream[{}]>'.format(self.open_index)
+            self.input_stream_opened = False
 
     def readline(self):
         if self.input_stream is None:
@@ -1480,6 +1649,7 @@ class ReaderUnbufOne(object):
         while self.line == '':
             if self.input_stream_opened:
                 self.input_stream.close()
+                self.input_stream_opened = False
             self.open_next()
             if self.input_stream is None:
                 return None
@@ -1489,157 +1659,161 @@ class ReaderUnbufOne(object):
             self.line = self.line[:-1]
         return self.line
 
-    def is_last_line(self):
-        return False
-
     def next_line(self):
-        return self.input_stream.readline()
+        return make_unicode(self.input_stream.readline(), self.encoding)
 
     def readline_from_file(self, filename):
-        if filename in self.open_files:
-            open_file = self.open_files.get(filename)
-            if open_file is not None:
-                line = open_file.readline()
-                if len(line) == 0:
-                    open_file.close()
-                    self.open_files[filename] = None
-                    return ''
-                return line
-            else:
-                return ''
-        elif filename == '/dev/stdin' or filename == '-':
-            return sys.stdin.readline()
-        else:
+        if filename not in self.open_files:
             open_file = None
             try:
-                args = {} if PY2 else {'encoding': self.encoding}
-                open_file = open(filename, mode='rt', **args)
-                self.open_files[filename] = open_file
-                return open_file.readline()
+                if filename in ['/dev/stdin', '-']:
+                    open_file = sys.stdin
+                    self.open_files['/dev/stdin'] = open_file
+                    self.open_files['-'] = open_file
+                else:
+                    open_file = open(filename, 'rt', encoding=self.encoding)
+                    self.open_files[filename] = open_file
             except IOError:
-                if open_file:
-                    open_file.close()
                 self.open_files[filename] = None
                 return ''
+
+        open_file = self.open_files.get(filename)
+        if open_file is None:
+            return ''
+        try:
+            line = make_unicode(open_file.readline(), self.encoding)
+        except IOError:  # pragma: no cover (not testable)
+            line = ''
+        if len(line) == 0:
+            if filename not in ['-', '/dev/stdin']:
+                try:
+                    open_file.close()
+                except Exception:  # pragma: no cover (not testable)
+                    pass
+            self.open_files[filename] = None
+        return line
 
     def close(self):
         if self.input_stream_opened:
             try:
                 self.input_stream.close()
-            except IOError:
+            except IOError:  # pragma: no cover (not testable)
                 pass
-        for open_file in self.open_files.values():
-            if open_file:
+        for (filename, open_file) in self.open_files.items():
+            if filename not in ['-', '/dev/stdin'] and open_file is not None:
                 try:
                     open_file.close()
-                except IOError:
+                except IOError:  # pragma: no cover (not testable)
                     pass
 
 
-class ReaderUnbufSep(ReaderUnbufOne):
-
+class ReaderUnbufferedSeparateInputs(ReaderUnbufferedOneStream):
+    """ This reader class is used, if the input streams/files are to be processed
+        individually - meaning that the line-number for the lines read will restart
+        with 0 for each new input stream/file.
+        There is no need - or indication for - when the last line of input of a stream
+        or file is being processed.
+    """
     def open_next(self):
         self.line_number = 0
-        super(ReaderUnbufSep, self).open_next()
+        ReaderUnbufferedOneStream.open_next(self)
 
 
-class ReaderUnbufSepInplace(ReaderUnbufSep):
+class ReaderUnbufferedSeparateInputsInplace(ReaderUnbufferedSeparateInputs):
+    """ This reader class is used, if inplace-editing is requested. That restricts
+        the input to be a list of file names and streams (especially stdin) can thus
+        not be processed.
+        There is no need - or indication for - when the last line of an input file
+        is being processed.
+        A callback to the writer instance is used to signal, that the output is to be
+        routed to a new temporary file and the current output file is to be renamed
+        to replace the current input file, if an input file reaches EOF.
+    """
 
-    def __init__(self, source_files, encoding, writer):
-        files = source_files
-        if type(source_files) != list:
-            files = [source_files]
-        if len(files) == 0:
-            raise SedException(
-                '', 'Can not use stdin as input for inplace-editing.')
-        for open_file in files:
-            if open_file is None or open_file == '-':
-                raise SedException(
-                    '', 'Can not use stdin as input for inplace-editing.')
-            elif type(open_file) != str:
-                raise SedException(
-                    '',
-                    "Can't use streams or files as input for inplace-editing.")
+    def __init__(self, inputs, encoding, writer):
+        self.check_inplace_inputs(inputs)
         self.writer = writer
-        super(ReaderUnbufSepInplace, self).__init__(source_files, encoding)
+        ReaderUnbufferedSeparateInputs.__init__(self, inputs, encoding)
 
     def open_next(self):
         self.writer.close_inplace()
-        super(ReaderUnbufSepInplace, self).open_next()
+        ReaderUnbufferedSeparateInputs.open_next(self)
         if self.input_stream is not None:
             self.writer.open_inplace(
                 self.source_file_name)
         return self.input_stream
 
 
-class ReaderBufOne(ReaderUnbufOne):
+class ReaderBufferedOneStream(ReaderUnbufferedOneStream):
+    """ This reader class is just like ReaderUnbufferedOneStream except
+        that the information about the input being on the last line of the
+        total input is available to the address range object instances.
+    """
 
     # used if last line address ($) required
     # buffer one line to be used from input stream
     def open_next(self):
-        super(ReaderBufOne, self).open_next()
+        ReaderUnbufferedOneStream.open_next(self)
         if self.input_stream:
-            self.nextline = self.input_stream.readline()
+            self.nextline = make_unicode(self.input_stream.readline(), self.encoding)
 
     def next_line(self):
         if self.nextline != '':
             line = self.nextline
-            self.nextline = self.input_stream.readline()
+            self.nextline = make_unicode(self.input_stream.readline(), self.encoding)
             return line
         else:
             return ''
 
     def is_last_line(self):
-        return self.nextline == '' and len(self.source_files) == 0
+        return self.nextline == '' and len(self.inputs) == 0
 
 
-class ReaderBufSep(ReaderBufOne):
+class ReaderBufferedSeparateInputs(ReaderBufferedOneStream):
+    """ This reader class is just like ReaderUnbufferedSeparateInputs except
+        that the information about the input being on the last line of the
+        current input stream/file is available to the address range object instances.
+    """
 
     def open_next(self):
         self.line_number = 0
-        super(ReaderBufSep, self).open_next()
+        ReaderBufferedOneStream.open_next(self)
 
     def is_last_line(self):
         return self.nextline == ''
 
 
-class ReaderBufSepInplace(ReaderBufSep):
+class ReaderBufferedSeparateInputsInplace(ReaderBufferedSeparateInputs):
+    """ This reader class is just like ReaderUnbufferedSeparateInputsInplace except
+        that the information about the input being on the last line of the current
+        input file is available to the address range object instances.
+    """
 
-    def __init__(self, source_files, encoding, writer):
-        files = source_files
-        if type(source_files) != list:
-            files = [source_files]
-        if len(files) == 0:
-            raise SedException(
-                '', 'Can not use stdin as input for inplace-editing.')
-        for filename in files:
-            if filename is None or filename == '-':
-                raise SedException(
-                    '', 'Can not use stdin as input for inplace-editing.')
-            elif type(filename) != str:
-                raise SedException('', 'Can not use streams or files as ' +
-                                   'input for inplace-editing.')
+    def __init__(self, inputs, encoding, writer):
+        self.check_inplace_inputs(inputs)
         self.writer = writer
-        super(ReaderBufSepInplace, self). __init__(source_files, encoding)
+        ReaderBufferedSeparateInputs.__init__(self, inputs, encoding)
 
     def open_next(self):
         self.writer.close_inplace()
-        super(ReaderBufSepInplace, self).open_next()
+        ReaderBufferedSeparateInputs.open_next(self)
         if self.input_stream is not None:
-            self.writer.open_inplace(
-                self.source_file_name)
+            self.writer.open_inplace(self.source_file_name)
         return self.input_stream
 
 
+# The following classes implement the various sed commands. Each command
+# found in the script is translated into an instance of one of those classes
+# and the Sed.apply function that justs 'plays' down the list of these command
+# instances.
+
+
 class Command(object):
-    num = 1
 
     def __init__(self, script, addr_range, function):
         self.position = script.position
-        self.num = Command.num
-        Command.num += 1
-        if (function in [':', '}'] and not isinstance(addr_range,
-                                                      AddressRangeNone)):
+        self.num = script.command_index()
+        if (function in [':', '}'] and not isinstance(addr_range, AddressRangeNone)):
             raise SedException(self.position,
                                'No address can be specified for command {cmd}',
                                cmd=function)
@@ -1682,7 +1856,7 @@ class Command(object):
                         cmd=self.function,
                         args=self.str_arguments())
 
-    def str_arguments(self):
+    def str_arguments(self):  # pragma: no cover (only debug code)
         return ''
 
     def parse_arguments(self, script):
@@ -1695,18 +1869,16 @@ class Command(object):
     def apply_func(self, sed):
         if self.addr_range.is_active():
             if sed.debug > 0:
-                print(' =============== executing '
-                      .ljust(sed.line_length, '='), file=sys.stderr)
-                print(self.toString(), file=sys.stderr)
+                DEBUG(' =============== executing '.ljust(sed.line_length, '='))
+                DEBUG('{cmd}', cmd=self.toString())
                 cmd = self.apply(sed)
                 sed.write_state('after')
                 return True, cmd
             else:
                 return True, self.apply(sed)
         elif sed.debug > 0:
-            print(' =============== skipping '
-                  .ljust(sed.line_length, '='), file=sys.stderr)
-            print(self.toString(), file=sys.stderr)
+            DEBUG(' =============== skipping '.ljust(sed.line_length, '='))
+            DEBUG('{cmd}', cmd=self.toString())
             sed.write_state('current')
         return False, self.next
 
@@ -1749,7 +1921,7 @@ class _Command_with_label(Command):
                 'Command {cmd} can not have any arguments after label',
                 cmd=self.function)
 
-    def str_arguments(self):
+    def str_arguments(self):  # pragma: no cover (only debug code)
         return ' ' + self.label
 
 
@@ -1774,15 +1946,8 @@ class Command_a(Command):
         sed.append_buffer.append(self.text)
         return self.next
 
-    def str_arguments(self):
+    def str_arguments(self):  # pragma: no cover (only debug code)
         return ' ' + self.text
-
-
-class Command_A(Command_a):
-
-    def apply(self, sed):
-        sed.PS += self.text
-        return self.next
 
 
 class Command_b(_Command_with_label):
@@ -1809,16 +1974,6 @@ class Command_c(Command_a):
         return None
 
 
-class Command_C(Command_a):
-
-    def apply(self, sed):
-        if self.addr_range.first_line:
-            sed.PS = self.text
-            return self.next
-        sed.PS = None
-        return None
-
-
 class Command_d(Command):
 
     def apply(self, sed):
@@ -1832,7 +1987,6 @@ class Command_D(Command):
         if '\n' in sed.PS:
             sed.PS = sed.PS[sed.PS.index('\n') + 1:]
         else:
-            sed.PS = ''
             sed.PS = sed.readline()
         return None
 
@@ -1886,13 +2040,6 @@ class Command_i(Command_a):
         return self.next
 
 
-class Command_I(Command_a):
-
-    def apply(self, sed):
-        sed.PS = self.text + sed.PS
-        return self.next
-
-
 class Command_l(Command):
 
     def parse_arguments(self, script):
@@ -1911,11 +2058,11 @@ class Command_l(Command):
             line_length = self.line_length
         else:
             line_length = sed.line_length
-        for lne in Sed.normalize_string(sed.PS, line_length):
+        for lne in sed.normalize_string(sed.PS, line_length):
             sed.printline('cmd l', lne)
         return self.next
 
-    def str_arguments(self):
+    def str_arguments(self):  # pragma: no cover (only debug code)
         return ' ' + str(self.line_length) if self.line_length else ''
 
 
@@ -1952,11 +2099,11 @@ class Command_p(Command):
 class Command_P(Command):
 
     def apply(self, sed):
-        try:
-            n = sed.PS.index('\n')
-            sed.printline('cmd P', sed.PS[:n])
-        except ValueError:
+        n = sed.PS.find('\n')
+        if n < 0:
             sed.printline('cmd P', sed.PS)
+        else:
+            sed.printline('cmd P', sed.PS[:n])
         return self.next
 
 
@@ -1978,8 +2125,8 @@ class Command_q(Command):
         # handled in sed.apply
         return None
 
-    def str_arguments(self):
-        return ' ' + str(self.exit_code)
+    def str_arguments(self):  # pragma: no cover (only debug code)
+        return ' ' + str(self.exit_code) if self.exit_code else ''
 
 
 class Command_Q(Command_q):
@@ -1997,22 +2144,22 @@ class Command_r(Command):
             raise SedException(self.position,
                                'Missing file name for command {cmd}',
                                cmd=self.function)
+        self.filename = self.filename
 
     def apply(self, sed):
         # https://groups.yahoo.com/neo/groups/sed-users/conversations/topics/9096
         try:
-            args = {} if PY2 else {'encoding': sed.encoding}
-            with open(self.filename, 'rt', **args) as f:
+            with open(self.filename, 'rt', encoding=sed.encoding) as f:
                 for line in f:
                     sed.append_buffer.append(
                         line[:-1] if line.endswith('\n') else line)
         except IOError:
-            # "if filename cannot be read, it is treated as if it were an empty
-            # file, without any error indication." (GNU sed manual page)
+            # if filename cannot be read, it is treated as if it were an empty
+            # file, without any error indication. (GNU sed manual page)
             pass
         return self.next
 
-    def str_arguments(self):
+    def str_arguments(self):  # pragma: no cover (only debug code)
         return ' ' + self.filename
 
 
@@ -2052,6 +2199,8 @@ class Command_s(Command):
                 script.position,
                 'Missing delimiter ({delim}) after replacement in command s',
                 delim=self.delim)
+        if self.delim == '\n':
+            script.script_line.continue_on_next_line()
         char = script.get_non_space_char_within_continued_lines()
         while char not in ';#}\0':
             if char == 'w':
@@ -2069,7 +2218,7 @@ class Command_s(Command):
                         'Unable to open file {file} for output from ' +
                         'command s with option w: {err}',
                         file=self.filename,
-                        err=str(e))
+                        err=make_unicode(str(e), script.sed.encoding))
             elif char == 'p':
                 if self.printit:
                     raise SedException(
@@ -2116,7 +2265,7 @@ class Command_s(Command):
         # make sure we keep sed compatibility
         self.regexp.process_flags_and_dollars()
 
-    def str_arguments(self):
+    def str_arguments(self):  # pragma: no cover (only debug code)
         flags = 'g' if self.globally else ''
         if self.count and self.count > 1:
             flags += str(self.count)
@@ -2128,7 +2277,7 @@ class Command_s(Command):
             flags += 'm'
         if self.filename:
             flags += 'w ' + self.filename
-        return "{regex}{repl}{delim}{flags}".format(
+        return '{regex}{repl}{delim}{flags}'.format(
             delim=self.delim,
             regex=self.regexp.toString(),
             repl=self.repl.string,
@@ -2178,7 +2327,6 @@ class Command_T(Command_b):
 class Command_v(Command):
 
     def apply(self, sed):  # @UnusedVariable
-        pass
         return self.next
 
     def parse_arguments(self, script):
@@ -2186,12 +2334,12 @@ class Command_v(Command):
             'version', alpha_only=False, skip_space=True)
         if not self.version:
             self.version = '4.0'
-        match = re.match(r'^([0-9]+)(?:\.([0-9]+)(?:\.([0-9]+))?)?$',
+        match = re.match('^([0-9]+)(?:\\.([0-9]+)(?:\\.([0-9]+))?)?$',
                          self.version)
         if match:
-            version = "%03d" % (int(match.group(1)))
-            release = "%03d" % (int(match.group(2)) if match.group(2) else 0)
-            fixlevel = "%03d" % (int(match.group(3)) if match.group(3) else 0)
+            version = '%03d' % (int(match.group(1)))
+            release = '%03d' % (int(match.group(2)) if match.group(2) else 0)
+            fixlevel = '%03d' % (int(match.group(3)) if match.group(3) else 0)
             if version + release + fixlevel > '004008000':
                 raise SedException(
                     self.position,
@@ -2205,7 +2353,7 @@ class Command_v(Command):
                 'Use a number like 4.8.0',
                 version=self.version)
 
-    def str_arguments(self):
+    def str_arguments(self):  # pragma: no cover (only debug code)
         return ' ' + self.version
 
 
@@ -2225,7 +2373,7 @@ class Command_w(Command_r):
                 'Unable to open file {f} for output for command {c}: {e}',
                 f=self.filename,
                 c=self.function,
-                e=str(e))
+                e=make_unicode(str(e), script.sed.encoding))
 
 
 class Command_W(Command_w):
@@ -2251,7 +2399,7 @@ class Command_y(Command):
         self.delim = script.get_char()
         if self.delim == '\n':
             script.script_line.continue_on_next_line()
-        char, _, _, self.left = script.get_char_list(self.delim)
+        char, self.left_strg, self.left = script.get_char_list(self.delim)
         if char != self.delim:
             raise SedException(
                 script.position,
@@ -2262,7 +2410,7 @@ class Command_y(Command):
                                'Missing left parameter to command y')
         if self.delim == '\n':
             script.script_line.continue_on_next_line()
-        char, _, _, self.right = script.get_char_list(self.delim)
+        char, self.right_strg, self.right = script.get_char_list(self.delim)
         if char != self.delim:
             raise SedException(
                 script.position,
@@ -2275,34 +2423,28 @@ class Command_y(Command):
         if not script.script_line.is_end_of_cmd():
             raise SedException(script.position,
                                'Invalid extra characters after command y')
-        try:
-            if sys.version_info[0] == 2:
-                # python2
-                self.translate = string.maketrans(self.left, self.right)
-            else:
-                # python3
-                self.translate = str.maketrans(self.left, self.right)
-        except Exception as e:
-            raise SedException(self.position,
-                               'Incorrect arguments to command y: {err}',
-                               err=str(e))
 
-    def str_arguments(self):
+        if len(self.left) != len(self.right):
+            raise SedException(self.position,
+                               'Left and right arguments to command y must be of equal length.')
+        self.translate_table = dict(zip((ord(c) for c in self.left), self.right))
+
+    def str_arguments(self):  # pragma: no cover (only debug code)
         # source_chars, dest_chars = self.args
         return '{delim}{left}{delim}{right}{delim}'.format(
                    delim=self.delim,
-                   left=self.left,
-                   right=self.right)
+                   left=self.left_strg,
+                   right=self.right_strg)
 
     def apply(self, sed):
-        sed.PS = sed.PS.translate(self.translate)
+        sed.PS = sed.PS.translate(self.translate_table)
         return self.next
 
 
-class Command_z(Command):
+class Command_z(Command_a):
 
     def apply(self, sed):
-        sed.PS = ''
+        sed.PS = self.text
         return self.next
 
 
@@ -2310,10 +2452,8 @@ COMMANDS = {'{': Command_block,
             '}': Command_block_end,
             ':': Command_label,
             'a': Command_a,
-            'A': Command_A,
             'b': Command_b,
             'c': Command_c,
-            'C': Command_C,
             'd': Command_d,
             'D': Command_D,
             '=': Command_equal,
@@ -2323,7 +2463,6 @@ COMMANDS = {'{': Command_block,
             'h': Command_h,
             'H': Command_H,
             'i': Command_i,
-            'I': Command_I,
             'l': Command_l,
             'n': Command_n,
             'N': Command_N,
@@ -2345,6 +2484,27 @@ COMMANDS = {'{': Command_block,
 
 
 class Replacement(object):
+    """ This class is used by the s command to represent the desired replacement
+        if a match is found in the pattern space. The replacement part of the s command
+        is compiled into an instance of this class, that is then later used to construct
+        the replacement string for a given match in the pattern space.
+
+        A Replacement consists of a list of 'cases'. Each case has a pair of case setter
+        functions associated with it, that defines, what case-changes have to be done
+        1. to the whole case and
+        2. to the case's first character
+
+        The case setting is stored as function references to avoid if-elif-cascades during
+        processing of the s command and construction of the replacement string for a match.
+
+        Each case in turn contains a list of parts which can be either a group back-reference
+        or a literal string.
+
+        To form a replacement string all cases are processed and concatinated.
+        A case is processed by concatinating all it's parts and then applying the
+        case-settings defined for the case by calling the stored case setter functions.
+    """
+
     CASE_ASIS = '\\E'
     CASE_LOWER = '\\L'
     CASE_UPPER = '\\U'
@@ -2356,10 +2516,10 @@ class Replacement(object):
         self.string = ''
         self.cases = [CaseSetter(self.CASE_ASIS, self.CASE_FLIP_NONE)]
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return self.string
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return '[' + ', '.join(repr(case) for case in self.cases) + ']'
 
     def add_group(self, escaped, num):
@@ -2377,8 +2537,12 @@ class Replacement(object):
         elif pyescaped in [self.CASE_FLIP_LOWER, self.CASE_FLIP_UPPER]:
             self.add_case(self.cases[-1].get_case_set(), pyescaped)
         else:
-            self.cases[-1].add_part(int(re.match('\\(\\?:\\\\(\\d+)\\)',
-                                                 pyescaped).group(1)))
+            match = re.match('\\(\\?:\\\\(\\d+)\\)', pyescaped)
+            if match:
+                self.cases[-1].add_part(int(match.group(1)))
+            else:
+                raise SedException(
+                    '', 'Programming error. Escape sequence in replacement string invalid.')
 
     def add_case(self, case_set, case_flip):
         if self.cases[-1].is_empty():
@@ -2401,12 +2565,14 @@ class CaseSetter(object):
         self.case_flip_fn = self.MAP.get(case_flip)
         self.parts = []
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return self.case_set + self.case_flip + ''.join(
-                    (part if type(part) == str else '\\+str(part)')
+                    (part
+                     if type(part) == str or PY2 and type(part) == unicode
+                     else '\\+str(part)')
                     for part in self.parts)
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return self.__str__()
 
     def is_empty(self):
@@ -2416,7 +2582,12 @@ class CaseSetter(object):
         return self.case_set
 
     def add_part(self, part):
-        self.parts.append(part)
+        if (type(part) == str or PY2 and type(part) == unicode) \
+           and len(self.parts) > 0 \
+           and type(self.parts[-1]) == type(part):
+            self.parts[-1] += part
+        else:
+            self.parts.append(part)
 
     def expand(self, match):
         txt = ''
@@ -2437,6 +2608,12 @@ class CaseSetter(object):
                                       if txt else '')
         # CASE_FLIP_NONE: keep_as_is, ## same as CASE_ASIS!!!
     }
+
+
+# The two following classes implement the regexps for PythonSed.
+# The offer services for the empty regexp which is a short-hand for
+# 'repeat the last executed regexp again" and real regexp and the
+# substitution of those used in the s command.
 
 
 class SedRegexpEmpty(object):
@@ -2460,14 +2637,14 @@ class SedRegexpEmpty(object):
         return SedRegexp.last_regexp.subn(
             replacement, strng, globally, count, sed_compatible)
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return self.toString()
 
-    def toString(self):
+    def toString(self):  # pragma: no cover (only for debugging)
         return ('' if self.delim == '/' or not self.address else '\\'
                 + self.delim + self.delim)
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return self.__str__()
 
     def process_flags_and_dollars(self):
@@ -2500,10 +2677,10 @@ class SedRegexp(object):
         self.flags = ''
         self.compiled = None
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return self.toString()
 
-    def toString(self):
+    def toString(self):  # pragma: no cover (only for debugging)
         result = '' if self.delim == '/' else '\\'
         result += self.delim + self.pattern + self.delim
         if self.address:
@@ -2511,7 +2688,7 @@ class SedRegexp(object):
             result += 'M' if self.multi_line else ''
         return result
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return self.__str__()
 
     def set_multi_line(self):
@@ -2567,7 +2744,7 @@ class SedRegexp(object):
         except Exception as e:
             raise SedException(
                 self.position,
-                'Error when compiling regex {escaped}{delim}{pattern}{delim}' +
+                'Error when searching with regex {escaped}{delim}{pattern}{delim}' +
                 ' (translated to """{py_pattern}"""): {err}',
                 escaped='' if self.delim == '/' else '\\',
                 delim=self.delim,
@@ -2581,7 +2758,6 @@ class SedRegexp(object):
         #   (http://gromgull.net/blog/2012/10/python-regex-unicode-and-brokenness/)
         # - the nth occurrence is replaced rather than the nth first ones
         #   (https://mail.python.org/pipermail/python-list/2008-December/475132.html)
-        # - since 3.5, first agument of _expand must be a compiled regex
         SedRegexp.last_regexp = self
 
         class Nth(object):
@@ -2592,21 +2768,27 @@ class SedRegexp(object):
 
             def __call__(self, matchobj):
                 try:
+                    # check for 'empty match' that should not been replaced
                     if sed_compatible \
                        and matchobj.group(0) == '' \
                        and matchobj.start(0) == self.prevmatch_end:
+                        # with sed compatablilty this is not really a match
+                        # thus we do not insert the replacement string.
                         return ''
                     else:
                         self.matches += 1
                         if self.matches == count \
                            or globally and self.matches > count:
-                            return replacement. expand(matchobj)
+                            # if this is a match we want to replace, calculate the
+                            # replacement string for the current match and return it
+                            return replacement.expand(matchobj)
                         else:
+                            # otherwise just return what was matched instead,
+                            # without any changes
                             return matchobj.group(0)
-#                except Exception as e:
-#                    print(e)
-#                    raise e
                 finally:
+                    # remember this match's end position for our
+                    # 'empty match'-check the next time around.
                     self.prevmatch_end = matchobj.end(0)
 
         try:
@@ -2627,15 +2809,20 @@ class SedRegexp(object):
         return (nsubst >= count), strng_res
 
 
+# The following classes implement the various forms of addresses and address ranges.
+# There is a specialized class for each kind of address range to avoid unneccessary
+# if-elif-cascades during processing of the input to optimise runtime.
+
+
 class AddressLast(object):
 
     def __init__(self, sed):
         self.sed = sed
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return '$'
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return self.__str__()
 
     def matches(self):
@@ -2643,30 +2830,40 @@ class AddressLast(object):
 
 
 class AddressZero(object):
+    """ This class is never actually used during runtime. Instances of this
+        class only exist during the compilation of addresses found in the script.
+        Their instances are then replaced with instances of the class
+        AddressRangeZeroToRegexp which is the only valid application of a 0-address.
+    """
 
     def __init__(self, sed):
         self.sed = sed
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return '0'
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return self.__str__()
 
-    def matches(self):
-        return True
+    # AddressZero objects only exists during compilation and are
+    # never actually used and thus don't need a method matches()
+    # def matches(self):
+    #     return True
 
 
 class AddressRegexp(object):
+    """ This address implenentation activates if a regexp can be matched
+        against the pattern space.
+    """
 
     def __init__(self, sed, regexp):
         self.sed = sed
         self.regexp = regexp
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return str(self.regexp)
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return self.__str__()
 
     def matches(self):
@@ -2674,15 +2871,19 @@ class AddressRegexp(object):
 
 
 class AddressNum(object):
+    """ This address implementation activates if a certain line number
+        is reached in the input stream or current input file (if the files
+        are processed separately).
+    """
 
     def __init__(self, sed, num):
         self.sed = sed
         self.num = num
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return str(self.num)
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return self.__str__()
 
     def matches(self):
@@ -2690,16 +2891,22 @@ class AddressNum(object):
 
 
 class AddressStep(object):
+    """ This address implementation activates, if a certain line number is reached
+        in the input or the line number is bigger than that and the difference modulo
+        a given step-number is zero.
+        It implements address of the kind <start>~<step> i.e. 5~3 which would activate
+        on 5, 8, 11, 14, ...
+    """
 
     def __init__(self, sed, num, step):
         self.sed = sed
         self.num = num
         self.step = step
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return str(self.num) + '~' + str(self.step)
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return self.__str__()
 
     def matches(self):
@@ -2710,6 +2917,9 @@ class AddressStep(object):
 
 
 class AddressRangeNone(object):
+    """ This address range implements a 'alway-active' dummy range and is used for
+        all commands that do not have an address associated with it.
+    """
 
     def __init__(self):
         self.first_line = True
@@ -2717,23 +2927,27 @@ class AddressRangeNone(object):
     def is_active(self):
         return True
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return ''
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return ''
 
-    def from_as_str(self):
+    def from_as_str(self):  # pragma: no cover (only for debugging)
         return ''
 
-    def to_as_str(self):
+    def to_as_str(self):  # pragma: no cover (only for debugging)
         return ''
 
-    def negated_as_str(self):
+    def negated_as_str(self):  # pragma: no cover (only for debugging)
         return ''
 
 
 class AddressRangeFake(object):
+    """ This address range class implements a fake address range that is actually only
+        a from-address without a to-address. It activates only for the lines, the stored
+        from-address is active for.
+    """
 
     def __init__(self, from_addr):
         self.from_addr = from_addr
@@ -2750,19 +2964,19 @@ class AddressRangeFake(object):
         else:
             return self.inactive_return
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return str(self.from_addr) + self.negated_as_str()
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return self.__str__()
 
-    def from_as_str(self):
+    def from_as_str(self):  # pragma: no cover (only for debugging)
         return str(self.from_addr)
 
-    def to_as_str(self):
+    def to_as_str(self):  # pragma: no cover (only for debugging)
         return ''
 
-    def negated_as_str(self):
+    def negated_as_str(self):  # pragma: no cover (only for debugging)
         if self.active_return:
             return ''
         else:
@@ -2770,6 +2984,9 @@ class AddressRangeFake(object):
 
 
 class AddressRange(object):
+    """ This is the abstract base-class of the other address range classes.
+        No instance of this class is ever created.
+    """
 
     def __init__(self, from_addr, exclude):
         self.from_addr = from_addr
@@ -2785,27 +3002,27 @@ class AddressRange(object):
         self.active_return = not negate
         self.inactive_return = negate
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (only for debugging)
         return (self.from_as_str() + ',' +
                 self.to_as_str() +
                 self.negated_as_str())
 
-    def __repr__(self):
+    def __repr__(self):  # pragma: no cover (only for debugging)
         return self.__str__()
 
-    def from_as_str(self):
+    def from_as_str(self):  # pragma: no cover (only for debugging)
         return str(self.from_addr)
 
-    def to_as_str(self):
+    def to_as_str(self):  # pragma: no cover (only for debugging)
         return '---'
 
-    def negated_as_str(self):
+    def negated_as_str(self):  # pragma: no cover (only for debugging)
         if self.active_return:
             return ''
         else:
             return '!'
 
-    def exclude_as_str(self):
+    def exclude_as_str(self):  # pragma: no cover (only for debugging)
         if self.exclude:
             return '-'
         else:
@@ -2813,6 +3030,9 @@ class AddressRange(object):
 
 
 class AddressRangeToNum(AddressRange):
+    """ This address range class implements an address range that starts with
+        a given from-address and continues to a certain line number within the input.
+    """
 
     def __init__(self, from_addr, num, exclude):
         super(AddressRangeToNum, self). __init__(from_addr, exclude)
@@ -2842,30 +3062,41 @@ class AddressRangeToNum(AddressRange):
     def calc_last_line(self):  # num
         return self.num
 
-    def to_as_str(self):
+    def to_as_str(self):  # pragma: no cover (only for debugging)
         return self.exclude_as_str() + str(self.num)
 
 
 class AddressRangeToCount(AddressRangeToNum):
+    """ This address range class implements the address range that starts with
+        a given from-address and ends after a certain number of lines from the input.
+    """
 
     def calc_last_line(self):  # count
         return self.sed.file_line_no() + self.num
 
-    def to_as_str(self):
+    def to_as_str(self):  # pragma: no cover (only for debugging)
         return self.exclude_as_str() + '+' + str(self.num)
 
 
 class AddressRangeToMultiple(AddressRangeToNum):
+    """ This address range class implements an address range that starts with
+        a given from-address and ends once the input line number becomes a
+        multiple of the specified multiple number.
+        It implements address ranges of the kind <from-addr>,~<multiple>
+    """
 
     def calc_last_line(self):
         line_no = self.sed.file_line_no()
         return line_no + self.num - (line_no % self.num)
 
-    def to_as_str(self):
+    def to_as_str(self):  # pragma: no cover (only for debugging)
         return self.exclude_as_str() + '~' + str(self.num)
 
 
 class AddressRangeToLastLine(AddressRange):
+    """ This address range class implemnents an address range that starts with
+        a given from-address and ends once in input reaches the last line.
+    """
 
     def is_active(self):
         if self.active:
@@ -2882,11 +3113,19 @@ class AddressRangeToLastLine(AddressRange):
         else:
             return self.inactive_return
 
-    def to_as_str(self):
+    def to_as_str(self):  # pragma: no cover (only for debugging)
         return self.exclude_as_str() + '$'
 
 
 class AddressRangeZeroToRegexp(AddressRange):
+    """ This address range implements the special address range 0,/regexp/, that
+        is active on the first line of input already and ends if the pattern space
+        matches the specified regexp.
+        This allows to have the first line end the address range which would otherwise
+        not be possible, since an address range will always match the start AND the end
+        line. The only two exceptions being this Zero-to-Regexp-address and an address
+        range activating on the last line of input.
+    """
 
     def __init__(self, from_addr, regexp, exclude):
         super(AddressRangeZeroToRegexp, self). __init__(from_addr, exclude)
@@ -2907,11 +3146,15 @@ class AddressRangeZeroToRegexp(AddressRange):
             self.first_line = True
             return self.inactive_return
 
-    def to_as_str(self):
+    def to_as_str(self):  # pragma: no cover (only for debugging)
         return self.exclude_as_str() + str(self.regexp)
 
 
 class AddressRangeToRegexp(AddressRange):
+    """ This address range class implements an address range that starts with
+        a given from-address and ends when the pattern space matches the given
+        regexp.
+    """
 
     def __init__(self, from_addr, regexp, exclude):
         super(AddressRangeToRegexp, self). __init__(from_addr, exclude)
@@ -2932,26 +3175,36 @@ class AddressRangeToRegexp(AddressRange):
         else:
             return self.inactive_return
 
-    def to_as_str(self):
+    def to_as_str(self):  # pragma: no cover (only for debugging)
         return self.exclude_as_str() + str(self.regexp)
 
 
+# All errors in PythonSed are reported through the following exception class
+
+
 class SedException(Exception):
+    """ Implements the error reporting exception in PythonSed.
+    """
 
     def __init__(self, position, message, **params):
-        self.message = 'sed.py error: %s: %s' % (position,
-                                                 message.format(**params))
+        if len(position) > 0:
+            self.message = 'sed.py error: {pos}: {msg}'.format(
+                pos=position, msg=message.format(**params))
+        else:
+            self.message = 'sed.py error: {msg}'.format(msg=message.format(**params))
 
-    def __str__(self):
+    def __str__(self):  # pragma: no cover (just used in IDE)
         return self.message
 
 
 # -- Main -------------------------------------------
-def do_helphtml():
+
+
+def do_helphtml():  # pragma: no cover (interactive code not testable with pyunittest)
     if os.path.isfile('sed.html'):
         helpfile = 'sed.html'
     else:
-        helpfile = r'http://sed.godrago.net/sed.html'
+        helpfile = 'https://www.gnu.org/software/sed/manual/sed.html'
     webbrowser.open(helpfile, new=2)
 
 
@@ -2985,82 +3238,89 @@ the script, as if it had been prefixed with -e.""")
         default=False,
         dest='do_helphtml')
     parser.add_argument(
-        "-v",
-        help="display version",
-        action="store_true",
+        '-v', '--version',
+        help='display version',
+        action='store_true',
         default=False,
-        dest="version")
+        dest='version')
+    parser.add_argument(
+        '--encoding',
+        help='input encoding',
+        action='store',
+        type=str,
+        default=DEFAULT_ENCODING)
     parser.add_argument(
         '-f', '--file',
-        help="add script commands from file",
-        action="append",
-        dest="scripts",
+        help='add script commands from file',
+        action='append',
+        dest='scripts',
         default=[],
         type=script_file_arg,
         metavar='file')
     parser.add_argument(
         '-e', '--expression',
-        help="add script commands from string",
-        action="append",
-        dest="scripts",
+        help='add script commands from string',
+        action='append',
+        dest='scripts',
         default=[],
         type=script_string_arg,
         metavar='string')
     parser.add_argument(
         '-i', '--in-place',
         nargs='?',
-        help="change input files in place",
-        dest="in_place",
+        help='change input files in place',
+        dest='in_place',
         metavar='backup suffix',
-        default=None)
+        default=0)
     parser.add_argument(
-        "-n", '--quiet', '--silent',
-        help="print only if requested",
-        action="store_true",
+        '-n', '--quiet', '--silent',
+        help='print only if requested',
+        action='store_true',
         default=False,
-        dest="no_autoprint")
+        dest='no_autoprint')
     parser.add_argument(
-        "-s", '--separate',
-        help="consider input files as separate files " +
-        "instead of a continuous stream",
-        action="store_true",
+        '-s', '--separate',
+        help='consider input files as separate files ' +
+        'instead of a continuous stream',
+        action='store_true',
         default=False,
-        dest="separate")
+        dest='separate')
     parser.add_argument(
-        "-p", '--python-syntax',
-        help="Python regexp syntax",
-        action="store_false",
+        '-p', '--python-syntax',
+        help='Python regexp syntax',
+        action='store_false',
         default=True,
-        dest="sed_compatible")
+        dest='sed_compatible')
     parser.add_argument(
-        "-r", '-E', '--regexp-extended',
-        help="extended regexp syntax",
-        action="store_true",
+        '-r', '-E', '--regexp-extended',
+        help='extended regexp syntax',
+        action='store_true',
         default=False,
-        dest="regexp_extended")
+        dest='regexp_extended')
     parser.add_argument(
         '-l', '--line-length',
-        help="line length to be used by l command",
-        dest="line_length",
+        help='line length to be used by l command',
+        dest='line_length',
         default=70,
         type=int)
     parser.add_argument(
-        "-d", "--debug",
+        '-d', '--debug',
         help='dump script and annotate execution on stderr',
-        action="store",
+        action='store',
         type=int,
         default=0,
-        dest="debug")
+        dest='debug')
     parser.add_argument(
-        "targets",
+        'targets',
         nargs='*',
         help='files to be processed (defaults to stdin if not specified)',
         default=[])
     args = parser.parse_args()
-    if (len(args.scripts) == 0 and
+    if (not args.version and
+        len(args.scripts) == 0 and
             len(args.targets) == 0):
         parser.print_help()
-        raise SedException('', 'No script specified')
+        raise SedException('', 'No script specified.')
     return args
 
 
@@ -3069,16 +3329,24 @@ def main():
     try:
         args = parse_command_line()
         if args.version:
-            print(BRIEF)
-            print(VERSION)
+            DEBUG('{brief}', brief=BRIEF)
+            DEBUG('Version: {vers}', vers=VERSION)
             return 0
-        elif args.do_helphtml:
+        elif args.do_helphtml:  # pragma: no cover (interactive code can not be tested)
             do_helphtml()
             return 0
         sed = Sed()
+        sed.encoding = args.encoding
         sed.no_autoprint = args.no_autoprint
         sed.regexp_extended = args.regexp_extended
-        sed.in_place = args.in_place
+
+        if args.in_place is None:
+            sed.in_place = ''
+        elif type(args.in_place) != str and (not PY2 or type(args.in_place) != unicode):
+            sed.in_place = None
+        else:
+            sed.in_place = args.in_place
+
         sed.line_length = args.line_length
         sed.debug = args.debug
         sed.separate = args.separate
@@ -3095,16 +3363,16 @@ def main():
                 sed.load_script(script.filename)
             else:
                 sed.load_string(script)
-        sed.apply(targets)
+        sed.apply(targets, output=sys.stdout)
         exit_code = sed.exit_code
     except SedException as e:
-        print(e.message, file=sys.stderr)
+        DEBUG('{msg}', msg=e.message)
         exit_code = 1
-    except:  # noqa: E722
+    except:  # noqa: E722  # pragma: no cover (only happening for programming errors)
         traceback.print_exception(*sys.exc_info(), file=sys.stderr)
         exit_code = 1
     return exit_code
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == '__main__':
+    sys.exit(main())  # pragma: no cover (not executed in unittest)
