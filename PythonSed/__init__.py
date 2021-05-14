@@ -1,1 +1,1 @@
-from .sed import Sed, SedException
+from .sed import Sed, SedException, main

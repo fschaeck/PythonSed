@@ -19,15 +19,6 @@ test-suite.py - unit testing utility for sed - sed.godrago.net\
 
 VERSION = '1.00'
 
-USAGE = """\
-test-suite.py [@]<file> [test-ref] [-b binary] [-x exclude-file]
-<file> may be:
-    - a text file implementing tests, cf. unit.suite
-    - a folder containing scripts and data, cf. testsuite\\
-    - a batch reference, if prefixed with @, containing file names or
-      folder names cf. all_tests.suites
-"""
-
 LICENSE = """\
 Copyright (c) 2014 Gilles Arcas-Luque (gilles dot arcas at gmail dot com)
 
@@ -61,9 +52,9 @@ else:
 
 
 class BaseTest:
-    def __init__(self):
+    def __init__(self, title):
+        self.title = title
         self.script = None
-        self.title = None
         self.input = None
         self.result = None
         self.wgood = None
@@ -89,7 +80,7 @@ class BaseTest:
                                              self.regexp_extended, debug,
                                              binary)
 
-    def checktest(self, ntest, scriptname, wgood):
+    def checktest(self, ntest, wgood):
         # common check routine
         # derived class must change directory if necessary
 
@@ -98,7 +89,7 @@ class BaseTest:
         else:
             try:
                 with open(self.goodname, 'rt', **OPEN_ARGS) as f:
-                    ref_output = [line.strip('\n\r') for line in f.readlines()]
+                    ref_output = f.readlines()
             except IOError:
                 print('error reading %s' % self.goodname)
                 sys.exit(1)
@@ -106,11 +97,9 @@ class BaseTest:
         if self.run_output is None:
             run_output = []
         else:
-            run_output = []
-            for line in self.run_output:
-                run_output.extend([x.strip('\r') for x in line.split('\n')])
+            run_output = self.run_output
 
-        return checktest(ntest, scriptname, ref_output, run_output, wgood)
+        return checktest(ntest, self.title, ref_output, run_output, wgood)
 
     def ignore(self, testnum):
         print('Test %3d ignored: %s' % (testnum, self.title))
@@ -125,8 +114,8 @@ class BaseTest:
 class SuiteTest(BaseTest):
     # test found in suite file
 
-    def __init__(self, title, script, inputlines, resultlines):
-        BaseTest.__init__(self)
+    def __init__(self, testsuite, title, script, inputlines, resultlines):
+        BaseTest.__init__(self, testsuite+': '+title[0])
 
         self.scriptname = 'test-tmp-script.sed'
         self.inputname = 'test-tmp-script.inp'
@@ -135,7 +124,6 @@ class SuiteTest(BaseTest):
 
         # script, input and result may be empty. In that case, the
         # previously defined entity is used.
-        self.title = title[0]
         self.script = '' if script == [] else script
         self.input = '' if inputlines == [] else inputlines
         self.result = '' if resultlines == [] else resultlines
@@ -173,9 +161,9 @@ class SuiteTest(BaseTest):
 
         return True
 
-    def check(self, ntest, scriptname):
+    def check(self, ntest):
 
-        return BaseTest.checktest(self, ntest, scriptname, [])
+        return BaseTest.checktest(self, ntest, [])
 
 
 # -- Collection of tests in directory ----------------------------------------
@@ -185,7 +173,7 @@ class FolderTest(BaseTest):
     # test found in folder
 
     def __init__(self, scriptname, folder):
-        BaseTest.__init__(self)
+        BaseTest.__init__(self, os.path.join(folder, scriptname))
 
         self.scriptname = scriptname
         self.inputname = scriptname.replace('.sed', '.inp')
@@ -193,7 +181,6 @@ class FolderTest(BaseTest):
         self.flagsname = scriptname.replace('.sed', '.flags')
 
         self.folder = folder
-        self.title = scriptname
         self.error_expected = False
 
     def prepare(self):
@@ -230,9 +217,9 @@ class FolderTest(BaseTest):
 
         return True
 
-    def check(self, ntest, scriptname):
+    def check(self, ntest):
 
-        res = BaseTest.checktest(self, ntest, scriptname, self.wgood)
+        res = BaseTest.checktest(self, ntest, self.wgood)
         return res
 
     def postproc(self):
@@ -267,7 +254,7 @@ def run_python_sed(scriptname, inputfile, no_autoprint, regexp_extended, debug):
         else:
             raise Exception()
 
-        return ''.join(sed.apply(inputfile, None)).split('\n')
+        return sed.apply(inputfile, None)
     except SedException as e:
         print(e.message, file=sys.stderr)
         return None
@@ -330,38 +317,50 @@ def checktest(testnum, testname, ref_output, run_output, wgood):
 
 def list_compare(tag1, tag2, list1, list2):
 
+    MISSING_MARKER = '<missing>'
+    UNEXPECTED_MARKER = '<unexpected>'
+
     max_lst_len = max(len(list1), len(list2))
     if max_lst_len == 0:
         return True, []
 
-    max_txt_len = max(list(len(txt) for txt in (list1+list2))+[len(tag1), len(tag2)])
-
     # make sure both lists have same length
-    list1.extend([''] * (max_lst_len - len(list1)))
-    list2.extend([''] * (max_lst_len - len(list2)))
+    list1.extend([None] * (max_lst_len - len(list1)))
+    list2.extend([None] * (max_lst_len - len(list2)))
 
-    diff = list()
+    max_txt_len_1 = max(list((len(UNEXPECTED_MARKER) if txt is None else len(txt))
+                             for txt in list1)+[len(tag1)])
+    max_txt_len_2 = max(list((len(MISSING_MARKER) if txt is None else len(txt))
+                             for txt in list2)+[len(tag2)])
+
+    diff = ['']
     res = True
-    diff.append('| No | ? | {tag1:<{txtlen}.{txtlen}s} | {tag2:<{txtlen}.{txtlen}s} |'
-                .format(tag1=tag1, tag2=tag2, txtlen=max_txt_len))
+    diff.append('|  No | ? | {tag1:<{txtlen1}.{txtlen1}s} | {tag2:<{txtlen2}.{txtlen2}s} |'
+                .format(tag1=tag1, tag2=tag2, txtlen1=max_txt_len_1, txtlen2=max_txt_len_2))
     for i, (x, y) in enumerate(zip(list1, list2)):
-
-        diff.append('| {idx:>2d} | {equal:1.1s} | {line1:<{txtlen}.{txtlen}s} ' +
-                    '| {line2:<{txtlen}.{txtlen}s} |'
+        if x != y and x is not None and y is not None:
+            if x.rstrip('\r\n') == y.rstrip('\r\n'):
+                x = x.replace('\r', '\\r')
+                x = x.replace('\n', '\\n')
+                y = y.replace('\r', '\\r')
+                y = y.replace('\n', '\\n')
+        diff.append(('| {idx:>3d} | {equal:1.1s} | {line1:<{txtlen1}.{txtlen1}s} ' +
+                     '| {line2:<{txtlen2}.{txtlen2}s} |')
                     .format(idx=i+1,
                             equal=(' ' if x == y else '*'),
-                            txtlen=max_txt_len,
-                            line1=x,
-                            line2=y))
+                            txtlen1=max_txt_len_1,
+                            txtlen2=max_txt_len_2,
+                            line1=UNEXPECTED_MARKER if x is None else x.rstrip('\r\n'),
+                            line2=MISSING_MARKER if y is None else y.rstrip('\r\n')))
         res = res and x == y
     return res, diff
 
 
 def file_compare(fn1, fn2):
     with open(fn1, 'rt', **OPEN_ARGS) as f:
-        lines1 = [line.strip('\n') for line in f.readlines()]
+        lines1 = f.readlines()
     with open(fn2, 'rt', **OPEN_ARGS) as f:
-        lines2 = [line.strip('\n') for line in f.readlines()]
+        lines2 = f.readlines()
     return list_compare(fn1, fn2, lines1, lines2)
 
 
@@ -441,7 +440,7 @@ def load_testsuite_file(testsuite):
 
         i += 1
 
-        tests.append(SuiteTest(title, script, inputlines, resultlines))
+        tests.append(SuiteTest(testsuite, title, script, inputlines, resultlines))
         test = tests[-1]
         index = len(tests) - 1
 
@@ -520,7 +519,7 @@ def run_testsuite(tests, target, binary, exclude, elapsed_only, debug):
                     if elapsed_only:
                         pass
                     else:
-                        res = test.check(user_index, test.title)
+                        res = test.check(user_index)
                         if not res:
                             n_failed += 1
                         else:
@@ -563,17 +562,40 @@ def test_ignored(test, exclude):
 
 
 def parse_command_line():
-    parser = argparse.ArgumentParser(usage=USAGE)
-
-    parser.add_argument("-b", help="binary", action="store",
-                        dest="binary", metavar='binary')
-    parser.add_argument("-x", help="exclude file", action="store",
-                        dest="exclude", metavar='test')
-    parser.add_argument("-e", help=argparse.SUPPRESS, action="store_true",
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+<file> may be:
+    - a text file implementing tests, cf. unit.suite
+    - a folder containing scripts and data, cf. testsuite\\
+    - a batch reference, if prefixed with @, containing file names or
+      folder names cf. all_tests.suites
+""")
+    parser.add_argument("-b", "--binary",
+                        help="binary sed to run instead of pythonsed",
+                        action="store",
+                        dest="binary",
+                        metavar='<sed command>')
+    parser.add_argument("-x", "--exclude",
+                        help="name of file with list of tests to exclude",
+                        action="store",
+                        dest="exclude",
+                        metavar='<exclude file>')
+    parser.add_argument("-e", "--elapsed-only",
+                        help='display elapsed time only',
+                        action="store_true",
                         dest="elapsed_only")
-    parser.add_argument("-d", "--debug", help="enable debug output", action="store_true")
-    parser.add_argument("file", help=argparse.SUPPRESS)
-    parser.add_argument("target", nargs='?', help=argparse.SUPPRESS)
+    parser.add_argument("-d", "--debug",
+                        help='switch on debugging output',
+                        action="store_true")
+    parser.add_argument("file",
+                        metavar="<file>",
+                        help='test specifications to load')
+    parser.add_argument("target",
+                        type=int,
+                        metavar='<test number>',
+                        nargs='?',
+                        help='specfic test to run')
 
     return parser, parser.parse_args()
 

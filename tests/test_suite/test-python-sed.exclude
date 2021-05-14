@@ -1,5 +1,5 @@
 # classes ( [:digit:] ) not implemented
-classes.sed
+testsuite1/classes.sed
 
 # e command and e flag are specific to gnu sed and not implemented in sed.py
-eval.sed
+testsuite1/eval.sed
