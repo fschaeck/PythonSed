@@ -15,7 +15,7 @@ import traceback
 import webbrowser
 
 
-__updated__ = '2021-05-11 18:10:04'
+__updated__ = '2021-05-13 12:57:55'
 
 BRIEF = """
 sed.py - python sed module and command line utility\
@@ -322,7 +322,6 @@ class Script(object):
         self.defined_labels = {}
         self.started_blocks = []
         self.first_command_entry = None
-        self.sed_compatible = sed.sed_compatible
         self.cmd_idx = 0
 
     def __str__(self):
@@ -603,7 +602,7 @@ class Script(object):
         if place == PLACE_CHRSET:
             # if the backslash is not escaping something, it stands for itself
             # (no need to double it in this case)
-            if not self.look_ahead('afnrtvsSwW0cdox' if self.sed_compatible else
+            if not self.look_ahead('afnrtvsSwW0cdox' if self.sed.sed_compatible else
                                    'afnrtvsSwW0123xdDuUN'):
                 return '\\', '\\\\', '\\'
         char = self.get_char()
@@ -632,7 +631,7 @@ class Script(object):
             # escapes, but for replacement strings
             # modifying case is more important
             return '\\' + char, '\\' + char, None
-        if self.sed_compatible:
+        if self.sed.sed_compatible:
             if place == PLACE_REGEXP:
                 if char == '\u0060':
                     return '\\\u0060', '\\A', None
@@ -874,7 +873,7 @@ class Script(object):
                             pychr = '\\' + pychr
                     elif char == '[':
                         char, pychr = self.get_charset()
-                    elif self.sed_compatible:
+                    elif self.sed.sed_compatible:
                         # in sed a ^ not at the beginning of
                         # a regexp must be taken literally
                         if char == '^' and not (last_pychr in ['(', '|', '']):
@@ -883,7 +882,7 @@ class Script(object):
                             # remember this dollar sign's position in py_pattern
                             dollars.append(len(py_pattern))
 
-                if self.sed_compatible and pychr == '?' \
+                if self.sed.sed_compatible and pychr == '?' \
                    and last_pychr in ['(', '+', '*']:
                     raise SedException(
                         self.position,
@@ -997,6 +996,8 @@ class Script(object):
             else:
                 replacement.add_literal(char, char)
             char = self.get_char()
+        if char != delim:
+            return None
         return replacement
 
     def get_address(self):
