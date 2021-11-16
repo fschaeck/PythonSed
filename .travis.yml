@@ -1,5 +1,8 @@
 # Config file for automatic testing at travis-ci.org
 
+# Use Ubuntu 20.4
+dist: focal
+
 language: python
 
 python:
