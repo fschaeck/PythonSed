@@ -72,6 +72,14 @@ This installs a command line utility named `pythonsed` and a package named `Pyth
 
 ***
 
+Another option is to use [pipx](https://pypa.github.io/pipx/). This will automatically download `pythonsed` into a temporary virtual environment and execute it
+
+```
+pipx run --spec git+https://github.com/fschaeck/PythonSed.git pythonsed
+```
+
+***
+
 ### Usage as a command line utility
 
 ------
