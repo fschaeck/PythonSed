@@ -2514,7 +2514,7 @@ Line 3.4\nLine 4.2\nLine 4.3\nLine 4.1
             inputs=[],
             stdin='',
             stdout='',
-            stderr='\nsed.py - python sed module and command line utility\nVersion: v2.1\n',
+            stderr='\nsed.py - python sed module and command line utility\nVersion: v2.1post0\n',
             exit_code=0)
 
     def test_132_write_to_stdout_and_stderr(self):
