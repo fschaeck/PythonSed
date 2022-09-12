@@ -20,7 +20,7 @@ __updated__ = '2022-09-12 17:58:11'
 BRIEF = """
 sed.py - python sed module and command line utility\
 """
-VERSION = "v2.1"
+VERSION = "v2.1post0"
 COPYRIGHT = """
 Copyright (c) 2021-2022 Frank Schaeckermann
     (github dash fschaeckermann at snkmail dot com)'
