@@ -48,5 +48,9 @@ jobs:
           python -m pip install --no-cache PythonSed==${version}
       - name: Running the installed package 
         run: |
-          python sed.py --help
+          python -c "from PythonSed import Sed
+          try:
+            sed=Sed()
+          except Exception as err: 
+            print(str(err.args[0]))"
           pythonsed --help
