@@ -1,0 +1,11 @@
+[version]
+path = "src/PythonSed/sed.py"
+
+[build.targets.sdist]
+exclude = [
+  "/.github",
+  "/run_coverage_tests.sh"
+]
+
+[build.targets.wheel]
+packages = ["src/PythonSed"]

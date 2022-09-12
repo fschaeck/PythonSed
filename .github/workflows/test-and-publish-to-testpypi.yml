@@ -1,0 +1,111 @@
+name: Test Python package and publish to TestPyPI
+
+on: push
+
+jobs:
+  linting:
+    name: Linting the source code before anything else
+    if: "!startsWith(github.ref, 'refs/tags/v')"
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      - name: Show github.ref
+        run: |
+          echo "GitHub ref is '${{ github.ref }}'"
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - name: Lint with flake8 (but only once with Python 3.10)
+        run: |
+          python -m pip install flake8 
+          # stop the build if there are Python syntax errors or undefined names
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+
+  test-for-all-python-versions:
+    name: Test the package for all supported Python versions
+    needs: linting
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["2.7", "3.7", "3.8", "3.9", "3.10"]
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-cov 
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Test with pytest
+        run: |
+          PYTHONPATH=./src:$PYTHONPATH pytest --cov=PythonSed --cov-report=xml:./coverage-${{matrix.python-version}}.xml tests/coverage_unittest
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          env_vars: OS,PYTHON
+          fail_ci_if_error: true
+          files: ./coverage-${{matrix.python-version}}.xml
+          flags: unittests
+          name: PythonSed
+          verbose: true
+
+  build-and-publish-to-testpypi:
+    name: Build and publish package PythonSed to TestPyPI
+    needs: test-for-all-python-versions
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install pypa/build
+        run: python -m pip install build --user
+      - name: Build a binary wheel and a source tarball
+        run: python -m build --sdist --wheel --outdir dist/
+      - name: Publish package to Test PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.TESTPYPI_API_TOKEN }}
+          repository_url: https://test.pypi.org/legacy/
+          skip_existing: True
+
+  test-installation:
+    name: Test installation and usage of the package
+    needs: build-and-publish-to-testpypi
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Wait for index to process the publish request
+        run: sleep 60
+
+      - name: Install the published package and it's depenedencies
+        run: |
+          version=$(grep '^\s*VERSION\s*=\s*"' src/PythonSed/sed.py | cut -d\" -f 2)
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://test.pypi.org/pypi/ --extra-index-url https://pypi.org/simple/ PythonSed==${version}
+
+      - name: Running the installed package 
+        run: |
+          python sed.py --help
+          pythonsed --help
+
