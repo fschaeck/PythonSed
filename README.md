@@ -41,13 +41,13 @@ A complete set of tests is available as well as a testing utility. These tests i
 
 | Version                    |  Status                                                      |
 | -------------------------- | ------------------------------------------------------------ |
+| Python 3.10                | Fully compatible                                             |
+| Python 3.9                 | Fully compatible                                             |
 | Python 3.8                 | Fully compatible                                             |
 | Python 3.7                 | Fully compatible even for s///g with zero length matches. See this [question at stackoverflow](https://stackoverflow.com/questions/53642571/retrieving-python-3-6-handling-of-re-sub-with-zero-length-matches-in-python-3) |
 | Python 3                   | Fully compatible                                             |
-| Python 2.7.4 and above     | Fully compatible                                             |
-| Python 2.7 to Python 2.7.3 | Fully compatible except regexps of the form ((.\*)\*). This causes one of the script from Chang suite to fail. |
-| Python 2.6                 | Fully compatible except regexps of the form ((.\*)\*). argparse module must be installed. |
-| Python 2.5 and below       | Not tested                                                   |
+| Python 2.7.18 and above    | Fully compatible                                             |
+| Python 2.7.17 and below    | Not tested                                                   |
 
 Compatibility status applies also to the testing utility `test-suite.py`.
 
@@ -63,10 +63,10 @@ Compatibility status applies also to the testing utility `test-suite.py`.
 
 ------
 
-To install, just clone or download the repository zip file and run the setup in download directory:
+To install PythonSed, just use pip:
 
 ```
-pip install .
+python -m pip install pythonsed
 ```
 This installs a command line utility named `pythonsed` and a package named `PythonSed`. 
 
