@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "PythonSed"
+name = "pythonsed"
 authors = [
   { name="Frank Schäckermann", email="pypi-fschaeckermann@snkmail.com" },
 ]

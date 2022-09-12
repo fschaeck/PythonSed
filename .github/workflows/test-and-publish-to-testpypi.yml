@@ -61,7 +61,7 @@ jobs:
           verbose: true
 
   build-and-publish-to-testpypi:
-    name: Build and publish package PythonSed to TestPyPI
+    name: Build and publish package pythonsed to TestPyPI
     needs: test-for-all-python-versions
     runs-on: ubuntu-latest
     
@@ -102,11 +102,11 @@ jobs:
         run: |
           version=$(grep '^\s*VERSION\s*=\s*"' src/PythonSed/sed.py | cut -d\" -f 2)
           python -m pip install --upgrade pip
-          python -m pip install --index-url https://test.pypi.org/pypi/ --extra-index-url https://pypi.org/simple/ PythonSed==${version}
+          python -m pip install --index-url https://test.pypi.org/pypi/ --extra-index-url https://pypi.org/simple/ pythonsed==${version}
 
       - name: Running the installed package 
         run: |
-          python -c "from PythonSed import Sed
+          python -c "from pythonsed import Sed
           try:
             sed=Sed()
           except Exception as err:
