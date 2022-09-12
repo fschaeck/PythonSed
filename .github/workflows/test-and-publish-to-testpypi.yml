@@ -106,7 +106,7 @@ jobs:
 
       - name: Running the installed package 
         run: |
-          python -c "from pythonsed import Sed
+          python -c "from PythonSed import Sed
           try:
             sed=Sed()
           except Exception as err:
