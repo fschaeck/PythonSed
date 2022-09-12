@@ -15,14 +15,14 @@ import traceback
 import webbrowser
 
 
-__updated__ = '2021-05-21 19:14:11'
+__updated__ = '2022-09-12 17:58:11'
 
 BRIEF = """
 sed.py - python sed module and command line utility\
 """
-VERSION = '2.00'
+VERSION = "v2.1"
 COPYRIGHT = """
-Copyright (c) 2021 Frank Schaeckermann
+Copyright (c) 2021-2022 Frank Schaeckermann
     (github dash fschaeckermann at snkmail dot com)'
 Copyright (c) 2014 Gilles Arcas-Luque
     (gilles dot arcas at gmail dot com)
@@ -3261,8 +3261,8 @@ class ParseArguments(object):
     def __init__(self):
         self.default_encoding = DEFAULT_ENCODING
         self.encoding = None
-
-        parser = argparse.ArgumentParser(
+        copyleft = "PythonSed %s (c) Frank Schäckermann 2021-2022" % VERSION
+        self.parser = argparse.ArgumentParser(
             formatter_class=argparse.RawDescriptionHelpFormatter,
             description=BRIEF,
             epilog="""\
@@ -3275,26 +3275,30 @@ Options -e and -f can be repeated multiple times and add to the commands \
 executed for each line of input in the sequence they are specified.
 
 If neither -e nor -f is given, the first positional parameter is taken as \
-the script, as if it had been prefixed with -e.""")
-        parser.add_argument(
+the script, as if it had been prefixed with -e.
+
+%s
+%s
+""" % ( "="*len(copyleft), copyleft ) )
+        self.parser.add_argument(
             '-H', '--htmlhelp',
             help='open html help page in web browser',
             action='store_true',
             default=False,
             dest='do_helphtml')
-        parser.add_argument(
+        self.parser.add_argument(
             '-v', '--version',
             help='display version',
             action='store_true',
             default=False,
             dest='version')
-        parser.add_argument(
+        self.parser.add_argument(
             '-c', '--encoding',
             help='input encoding',
             action='store',
             type=self.encoding_arg,
             default=DEFAULT_ENCODING)
-        parser.add_argument(
+        self.parser.add_argument(
             '-f', '--file',
             help='add script commands from file',
             action='append',
@@ -3302,7 +3306,7 @@ the script, as if it had been prefixed with -e.""")
             default=[],
             type=self.file_arg,
             metavar='file')
-        parser.add_argument(
+        self.parser.add_argument(
             '-e', '--expression',
             help='add script commands from string',
             action='append',
@@ -3310,7 +3314,7 @@ the script, as if it had been prefixed with -e.""")
             default=[],
             type=self.literal_arg,
             metavar='string')
-        parser.add_argument(
+        self.parser.add_argument(
             '-i', '--in-place',
             nargs='?',
             help='change input files in place',
@@ -3318,61 +3322,59 @@ the script, as if it had been prefixed with -e.""")
             dest='in_place',
             metavar='backup suffix',
             default=0)
-        parser.add_argument(
+        self.parser.add_argument(
             '-n', '--quiet', '--silent',
             help='print only if requested',
             action='store_true',
             default=False,
             dest='no_autoprint')
-        parser.add_argument(
+        self.parser.add_argument(
             '-s', '--separate',
             help='consider input files as separate files ' +
             'instead of a continuous stream',
             action='store_true',
             default=False,
             dest='separate')
-        parser.add_argument(
+        self.parser.add_argument(
             '-p', '--python-syntax',
             help='Python regexp syntax',
             action='store_false',
             default=True,
             dest='sed_compatible')
-        parser.add_argument(
+        self.parser.add_argument(
             '-r', '-E', '--regexp-extended',
             help='extended regexp syntax',
             action='store_true',
             default=False,
             dest='regexp_extended')
-        parser.add_argument(
+        self.parser.add_argument(
             '-l', '--line-length',
             help='line length to be used by l command',
             dest='line_length',
             default=70,
             type=int)
-        parser.add_argument(
+        self.parser.add_argument(
             '-d', '--debug',
             help='dump script and annotate execution on stderr',
             action='store',
             type=int,
             default=0,
             dest='debug')
-        parser.add_argument(
+        self.parser.add_argument(
             'targets',
             nargs='*',
             type=self.file_arg,
             help='files to be processed (defaults to stdin if not specified)',
             default=[])
-        self.args = parser.parse_args()
-        if (not self.args.version and
-            len(self.args.scripts) == 0 and
-                len(self.args.targets) == 0):
-            parser.print_help()
-            raise SedException('', 'No script specified.')
+        self.args = self.parser.parse_args()
 
     def __getattr__(self, name):
         if name in self.args:
             return self.args.__getattribute__(name)
         raise AttributeError('Attribute {name} not found'.format(name=name))
+
+    def print_help(self):
+        self.parser.print_help()
 
     def get_encoding(self):
         if self.encoding:
@@ -3407,6 +3409,11 @@ def main():
         elif args.do_helphtml:  # pragma: no cover (interactive code can not be tested)
             do_helphtml()
             return 0
+        elif (len(args.scripts) == 0
+              and len(args.targets) == 0):
+            args.print_help()
+            raise SedException('', 'No script specified.')
+
         sed = Sed()
         sed.encoding = encoding
         sed.no_autoprint = args.no_autoprint
@@ -3439,16 +3446,11 @@ def main():
         targets = list((target.encoding, target.filename) for target in targets)
         sed.apply(targets, output=sys.stdout)
         exit_code = sed.exit_code
+        return exit_code
     except SedException as e:
         DEBUG('{msg}', msg=e.message)
         exit_code = 1
-    except:  # noqa: E722  # pragma: no cover (only happening for programming errors)
-        byteStream = BytesIO()
-        traceback.print_exception(*sys.exc_info(), file=byteStream)
-        sys.stderr.write(make_unicode(byteStream.getvalue(), encoding))
-        del byteStream
-        exit_code = 1
-    return exit_code
+        return exit_code
 
 
 if __name__ == '__main__':
